@@ -1,0 +1,9 @@
+{
+  "appId": "com.trailtorque.game",
+  "appName": "Trail Torque",
+  "webDir": "dist",
+  "backgroundColor": "#83b7dc",
+  "android": {
+    "allowMixedContent": false
+  }
+}

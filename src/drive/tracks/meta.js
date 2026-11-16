@@ -1,0 +1,72 @@
+// Static per-track metadata (menus read this without compiling terrain).
+// par = { gold, silver, bronze } total seconds incl. penalties. Gold is set from
+// the headless test driver's time (scripts/bot.mjs), so it is always achievable.
+const P = (gold) => ({ gold, silver: Math.round(gold * 1.25), bronze: Math.round(gold * 1.6) });
+
+export const TRACK_META = [
+  // ---- Forest Trails
+  { id: 'forest-entry', name: 'Forest Entry', region: 'forest', weather: 'clear', time: 'morning', reward: 350, par: P(720),
+    rec: 'Stock vehicle',
+    blurb: 'A natural dirt road into the trees. Small rocks, uneven ground and gentle climbs.' },
+  { id: 'fallen-forest', name: 'Fallen Forest', region: 'forest', weather: 'overcast', time: 'day', reward: 450, par: P(720),
+    rec: 'Stock vehicle',
+    blurb: 'Storm-felled trunks, tree roots and muddy bends on a narrow forest road.' },
+  { id: 'river-crossing', name: 'River Crossing', region: 'forest', weather: 'clear', time: 'day', reward: 550, par: P(700),
+    rec: 'Stock vehicle',
+    blurb: 'Seven fords, wet rock and slippery banks. Getting out is harder than getting in.' },
+  { id: 'deep-forest', name: 'Deep Forest Challenge', region: 'forest', weather: 'fog', time: 'dusk', reward: 700, par: P(910),
+    rec: 'Stock vehicle, patience',
+    blurb: 'Fog, deep mud, steep dirt climbs and tight technical sections. The forest exam.' },
+  // ---- Mud Valley
+  { id: 'muddy-entrance', name: 'Muddy Entrance', region: 'mud', weather: 'overcast', time: 'day', reward: 800, par: P(620),
+    rec: 'Engine 2',
+    blurb: 'Shallow mud, slick bends and rutted tracks. Learn to drive on half the grip.' },
+  { id: 'deep-mud-pit', name: 'Deep Mud Pit', region: 'mud', weather: 'rain', time: 'day', reward: 950, par: P(660),
+    rec: 'Mud tyres + winch',
+    blurb: 'Pit after pit of deep mud in the rain. Spin the wheels and you sink.' },
+  { id: 'waterlogged-valley', name: 'Waterlogged Valley', region: 'mud', weather: 'rain', time: 'day', reward: 1100, par: P(670),
+    rec: 'Mud tyres + winch',
+    blurb: 'A flooded valley: deep wades, greasy riverbanks and muddy slopes.' },
+  { id: 'mud-mountain', name: 'Mud Mountain', region: 'mud', weather: 'heavyrain', time: 'day', reward: 1300, par: P(760),
+    rec: 'Mud tyres + winch, Engine 2',
+    blurb: 'Steep muddy climbs and slides down the far side in a downpour.' },
+  // ---- Rocky Mountains
+  { id: 'rocky-entrance', name: 'Rocky Entrance', region: 'rocky', weather: 'clear', time: 'morning', reward: 1400, par: P(660),
+    rec: 'Suspension 2, Lift 2',
+    blurb: 'Gravel, rock fields and a slot canyon. A test for the suspension.' },
+  { id: 'rock-crawler', name: 'Rock Crawler', region: 'rocky', weather: 'clear', time: 'day', reward: 1600, par: P(710),
+    rec: 'Rock tyres, diff locks, Lift 2',
+    blurb: 'Big rocks, lifted wheels and walking-pace wheel placement.' },
+  { id: 'mountain-climb', name: 'Mountain Climb', region: 'rocky', weather: 'overcast', time: 'day', reward: 1800, par: P(780),
+    rec: 'Engine 3, diff locks',
+    blurb: '350 metres straight up: hairpin stacks, loose scree and a 26 percent wall.' },
+  { id: 'mountain-descent', name: 'Mountain Descent', region: 'rocky', weather: 'clear', time: 'dusk', reward: 2000, par: P(700),
+    rec: 'Brakes 2, rock tyres',
+    blurb: 'The way back down. Scree chutes, a narrow ledge and brakes on the limit.' },
+  // ---- Deadly Ridge
+  { id: 'ridge-entry', name: 'Ridge Entry', region: 'ridge', weather: 'clear', time: 'dusk', reward: 2200, par: P(760),
+    rec: 'Brakes 3, rock tyres',
+    blurb: 'A one-lane road cut into a cliff. The edge is always one mistake away.' },
+  { id: 'cliff-bridge', name: 'Cliff Bridge', region: 'ridge', weather: 'overcast', time: 'day', reward: 2400, par: P(700),
+    rec: 'Steady hands',
+    blurb: 'Eight rail-less wooden bridges and two rockfalls with cliff-side detours.' },
+  { id: 'deadly-pass', name: 'Deadly Pass', region: 'ridge', weather: 'fog', time: 'day', reward: 2700, par: P(690),
+    rec: 'Brakes 3, rock tyres',
+    blurb: 'A steep descent through fog on a road barely wider than the truck.' },
+  { id: 'final-ridge', name: 'Final Ridge', region: 'ridge', weather: 'clear', time: 'dusk', reward: 3000, par: P(670),
+    rec: 'Diff locks, winch, Lift 3',
+    blurb: 'The spine of the ridge: drops both sides, rock steps and a 28 percent headwall.' },
+  // ---- Extreme Expedition
+  { id: 'snow-entry', name: 'Snow Entry', region: 'snow', weather: 'snow', time: 'day', reward: 3200, par: P(660),
+    rec: 'Snow tyres',
+    blurb: 'Snow-covered roads, drifts and the first ice patches.' },
+  { id: 'frozen-river', name: 'Frozen River', region: 'snow', weather: 'clear', time: 'morning', reward: 3500, par: P(630),
+    rec: 'Studded snow tyres, Brakes 4',
+    blurb: 'Kilometres of glass-smooth river ice. Steering and braking become suggestions.' },
+  { id: 'blizzard-mountain', name: 'Blizzard Mountain', region: 'snow', weather: 'blizzard', time: 'day', reward: 4000, par: P(690),
+    rec: 'Snow tyres, winch, diff locks',
+    blurb: 'A whiteout climb through deep drifts. Follow the posts or get lost.' },
+  { id: 'extreme-summit', name: 'Extreme Summit', region: 'snow', weather: 'snow', time: 'dusk', reward: 5000, par: P(890),
+    rec: 'Everything you own',
+    blurb: 'Ice, snow, buried rocks, a gorge bridge and the last wall to the summit.' }
+];

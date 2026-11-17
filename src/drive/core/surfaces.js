@@ -13,6 +13,10 @@ export const SURFACES = {
   mud:      { grip: 0.46, roll: 0.090, sink: 0.09, dig: 0.16, drag: 260,  rough: 0.20, color: [0.29, 0.20, 0.13] },
   deepmud:  { grip: 0.34, roll: 0.130, sink: 0.17, dig: 0.24, drag: 520,  rough: 0.15, color: [0.21, 0.14, 0.09] },
   bog:      { grip: 0.28, roll: 0.200, sink: 0.26, dig: 0.30, drag: 800,  rough: 0.10, color: [0.16, 0.11, 0.07] },
+  deepsand: { grip: 0.50, roll: 0.125, sink: 0.13, dig: 0.26, drag: 380,  rough: 0.10, color: [0.84, 0.70, 0.46] },
+  ash:      { grip: 0.50, roll: 0.055, sink: 0.05, dig: 0.12, drag: 130,  rough: 0.20, color: [0.20, 0.19, 0.19] },
+  lavarock: { grip: 0.96, roll: 0.030, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.85, color: [0.10, 0.09, 0.09] },
+  lava:     { grip: 0.55, roll: 0.090, sink: 0.06, dig: 0.00, drag: 300,  rough: 0.30, color: [2.2, 0.62, 0.10], hot: true },
   rock:     { grip: 1.02, roll: 0.020, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.70, color: [0.48, 0.47, 0.46] },
   wetrock:  { grip: 0.58, roll: 0.020, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.70, color: [0.33, 0.34, 0.36] },
   riverbed: { grip: 0.55, roll: 0.060, sink: 0.04, dig: 0.08, drag: 160,  rough: 0.60, color: [0.36, 0.33, 0.28] },
@@ -42,13 +46,13 @@ export const TIRES = {
   mud: {
     name: 'Mud-Terrain', price: 1800,
     desc: 'Deep lugs bite in mud and wet grass. Noisy and vague on rock and ice.',
-    grip: { mud: 1.5, deepmud: 1.6, bog: 1.6, grass: 1.2, riverbed: 1.15, sand: 1.1, rock: 0.9, wetrock: 0.88, ice: 0.85 },
+    grip: { mud: 1.5, deepmud: 1.6, bog: 1.6, deepsand: 1.2, ash: 1.15, grass: 1.2, riverbed: 1.15, sand: 1.1, rock: 0.9, wetrock: 0.88, ice: 0.85 },
     sink: 0.72, dig: 0.6
   },
   rock: {
     name: 'Rock Crawler', price: 2400,
     desc: 'Soft sticky compound. Clings to rock and wet stone, clogs fast in mud.',
-    grip: { rock: 1.28, wetrock: 1.45, gravel: 1.15, scree: 1.25, riverbed: 1.2, wood: 1.15, mud: 0.85, deepmud: 0.8, snow: 0.9 },
+    grip: { rock: 1.28, wetrock: 1.45, lavarock: 1.25, gravel: 1.15, scree: 1.25, riverbed: 1.2, wood: 1.15, mud: 0.85, deepmud: 0.8, snow: 0.9 },
     sink: 1.0, dig: 1.1
   },
   snow: {
@@ -72,7 +76,11 @@ export const WEATHER = {
   heavyrain: { name: 'Heavy Rain',   grip: 0.74, wet: 1.0, fog: 0.45, rain: 1.0, snow: 0,   wind: 0.5 },
   fog:       { name: 'Fog',          grip: 0.95, wet: 0.2, fog: 0.28, rain: 0,   snow: 0,   wind: 0.1 },
   snow:      { name: 'Light Snow',   grip: 0.95, wet: 0,   fog: 0.6,  rain: 0,   snow: 0.4, wind: 0.3 },
-  blizzard:  { name: 'Blizzard',     grip: 0.85, wet: 0,   fog: 0.22, rain: 0,   snow: 1.0, wind: 1.0 }
+  blizzard:  { name: 'Blizzard',     grip: 0.85, wet: 0,   fog: 0.22, rain: 0,   snow: 1.0, wind: 1.0 },
+  sandstorm: { name: 'Sandstorm',    grip: 0.92, wet: 0,   fog: 0.26, rain: 0,   snow: 0,   wind: 1.0, dust: 1.0 },
+  haze:      { name: 'Heat Haze',    grip: 1.0,  wet: 0,   fog: 0.7,  rain: 0,   snow: 0,   wind: 0.3, dust: 0.25 },
+  mist:      { name: 'Jungle Mist',  grip: 0.93, wet: 0.5, fog: 0.5,  rain: 0.12, snow: 0,  wind: 0.1 },
+  ashfall:   { name: 'Ash Fall',     grip: 0.9,  wet: 0,   fog: 0.42, rain: 0,   snow: 0,   wind: 0.4, ash: 1.0 }
 };
 
 /** Rain turns rock into wet rock and makes everything except snow/ice slicker. */

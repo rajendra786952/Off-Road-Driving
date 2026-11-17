@@ -89,6 +89,10 @@ export class Hud {
     this.dmgBar = el('div', 'bar', '<i style="background:#e0463c;width:0"></i>');
     this.lbRpm = el('div', '', 'RPM'); this.lbFuel = el('div', '', 'FUEL'); this.lbDmg = el('div', '', 'DAMAGE');
     bars.append(this.lbRpm, this.rpmBar, this.lbFuel, this.fuelBar, this.lbDmg, this.dmgBar);
+    if (opts.hot) {
+      this.heatBar = el('div', 'bar', '<i style="background:#f0b429;width:35%"></i>');
+      bars.append(el('div', '', 'TEMP'), this.heatBar);
+    }
     this.info = el('div', 'info');
     dash.append(this.incl, this.speedEl, bars, this.info);
     hud.append(dash);
@@ -265,6 +269,10 @@ export class Hud {
       this.fuelBar.firstChild.style.width = `${fuel * 100}%`;
       this.fuelBar.firstChild.style.background = fuel < 0.2 ? '#e0463c' : fuel < 0.4 ? '#f0b429' : '#55c26a';
       this.dmgBar.firstChild.style.width = `${ss.damage}%`;
+      if (this.heatBar) {
+        this.heatBar.firstChild.style.width = `${ss.heat * 100}%`;
+        this.heatBar.firstChild.style.background = ss.overheated ? '#e0463c' : ss.heat > 0.8 ? '#f07a29' : '#f0b429';
+      }
       const gear = veh.speed < -0.3 ? 'R' : (veh.low ? 'L' : 'H') + veh.gear;
       this.info.innerHTML = `${gear} &nbsp; ${veh.wheels[0].surface.name.toUpperCase()}<br>${extra.weather}${veh.lock ? '<br>LOCKED' : ''}`;
       this.bWinch.classList.toggle('on', !!veh.winchAnchor && this.opts.winch && !this.input.winch);
@@ -272,7 +280,9 @@ export class Hud {
       let warn = '';
       if (veh.upY < 0.35) warn = 'ROLLED OVER<br>press RECOVER';
       else if (ss.fuel <= 0) warn = 'OUT OF FUEL<br>press RECOVER for a tow';
+      else if (ss.overheated) warn = 'OVERHEATED - ease off the throttle';
       else if (ss.damage >= 100) warn = 'ENGINE DAMAGED - limp mode until next checkpoint';
+      else if (ss.heat > 0.88) warn = 'ENGINE HOT';
       else if (ss.offRoute) warn = 'OFF ROUTE';
       else if (ss.stuckTime > 4) warn = this.opts.winch && veh.winchAnchor ? 'STUCK - hold WINCH' : 'STUCK - ease off, reverse, or RECOVER';
       else if (fuel < 0.15) warn = 'LOW FUEL';

@@ -1,61 +1,49 @@
-// Bridge between the Phaser menus and the Three.js drive scene.
-// Phaser is put to sleep and its canvas hidden while driving; the 3D scene runs
-// in its own overlay canvas. They never share a WebGL context.
+// Starts a 3D drive from the React shell. The drive scene owns its own DOM overlay
+// and WebGL canvas; Phaser is asleep the whole time (see src/main.js).
 import { DriveGame } from './DriveGame.js';
 import { getTrackDef } from './tracks/index.js';
 import { applyResult, applyAbandon, nextTrackId, isTrackUnlocked } from './core/progress.js';
+import { sunElevation } from './render/sky.js';
 import { getVehicle } from '../game/config/vehicles.js';
 import { SaveSystem } from '../game/systems/SaveSystem.js';
 import { vibrate } from '../game/systems/platform.js';
+import { DEBUG } from '../game/config/constants.js';
 
 let active = null;
 
 export function isDriving() { return !!active; }
+export function driveBack() { if (active) active.back(); }
+export function drivePause() { if (active && active.state === 'run') active.pause(); }
 
-/** Start a track. `scene` is the calling Phaser scene. */
-export function launchDrive(scene, trackId) {
+/**
+ * @param o { trackId, difficulty, audioCtx, onExit(action, trackId) }   action = retry | next | garage | tracks
+ */
+export function launchDrive(o) {
   if (active) return;
-  const game = scene.game;
   const save = SaveSystem.data;
-  const def = getTrackDef(trackId);
+  const def = getTrackDef(o.trackId);
   const vehicle = getVehicle(save.selectedVehicle);
   const container = document.getElementById('app') || document.body;
-  const phaserCanvas = game.canvas;
-
-  const onBack = () => active && active.back();
-  const onPause = () => active && active.state === 'run' && active.pause();
-  const stopPhaser = () => {
-    game.events.on('android-back', onBack);
-    game.events.on('app-pause', onPause);
-    game.loop.sleep();
-    phaserCanvas.style.visibility = 'hidden';
-  };
-  const startPhaser = () => {
-    game.events.off('android-back', onBack);
-    game.events.off('app-pause', onPause);
-    phaserCanvas.style.visibility = '';
-    game.loop.wake();
-  };
-
-  scene.input.enabled = false;
-  stopPhaser();
-  const gearState = save.gear[vehicle.id];
   active = new DriveGame({
     parent: container,
     def,
     vehicle,
+    difficulty: o.difficulty || save.settings.difficulty || 'standard',
     ups: save.upgrades[vehicle.id],
-    gear: { ...gearState, tire: save.tires[vehicle.id].sel },
+    gear: { ...save.gear[vehicle.id], tire: save.tires[vehicle.id].sel },
     settings: save.settings,
-    audioCtx: game.sound && game.sound.context ? game.sound.context : null,
+    audioCtx: o.audioCtx || null,
     vibrate: (ms) => { if (save.settings.vibration) vibrate(ms); },
     onSettings: () => SaveSystem.persist(),
-    hasNext: () => { const n = nextTrackId(trackId); return !!n && isTrackUnlocked(save, n); },
+    hasNext: () => { const n = nextTrackId(o.trackId); return !!n && (DEBUG || isTrackUnlocked(save, n)); },
     onFinish: (ss, score) => {
-      const sum = applyResult(save, trackId, {
+      const sum = applyResult(save, o.trackId, {
         time: score.time, medal: score.medal, stars: score.stars, objectives: score.objectives,
         recoveries: ss.recoveries, damage: ss.damage,
         cachesFound: ss.caches.map((c) => c.found), cacheRewards: ss.caches.map((c) => c.reward),
+        relicsFound: ss.relics.map((c) => c.found),
+        rewardMult: ss.diff.reward, difficulty: ss.diff.name, difficultyId: ss.diff.id,
+        night: sunElevation(ss.hours[1]) < -0.05,
         distance: ss.distance, driveTime: ss.time
       });
       SaveSystem.persist();
@@ -68,12 +56,7 @@ export function launchDrive(scene, trackId) {
         applyAbandon(save, { distance: g.session.distance, driveTime: g.session.time, recoveries: g.session.recoveries });
       }
       SaveSystem.persist();
-      startPhaser();
-      scene.input.enabled = true;
-      if (action === 'retry') { scene.scene.restart({ autoStart: trackId }); }
-      else if (action === 'next') { scene.scene.restart({ autoStart: nextTrackId(trackId) }); }
-      else if (action === 'garage') scene.scene.start('GarageScene', { from: 'ExpeditionScene' });
-      else scene.scene.restart({ region: def.region });
+      o.onExit(action, o.trackId);
     }
   });
   window.__drive = active;

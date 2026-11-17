@@ -2,7 +2,7 @@
 // rewards, XP, records and achievements. Unit tested in tests/drive.test.mjs.
 import { TRACK_META } from '../tracks/meta.js';
 
-export const REGION_ORDER = ['forest', 'mud', 'rocky', 'ridge', 'snow'];
+export const REGION_ORDER = ['forest', 'mud', 'rocky', 'ridge', 'snow', 'desert', 'jungle', 'volcano'];
 
 export function trackIndex(id) { return TRACK_META.findIndex((t) => t.id === id); }
 export function regionTracks(region) { return TRACK_META.filter((t) => t.region === region); }
@@ -37,13 +37,20 @@ export const ACHIEVEMENTS = [
   { id: 'rocky', name: 'Rock Crawler', desc: 'Complete every Rocky Mountains track', test: (s) => regionDone(s, 'rocky') },
   { id: 'ridge', name: 'Ridge Survivor', desc: 'Complete every Deadly Ridge track', test: (s) => regionDone(s, 'ridge') },
   { id: 'snow', name: 'Summiteer', desc: 'Complete every Extreme Expedition track', test: (s) => regionDone(s, 'snow') },
-  { id: 'legend', name: 'Trail Torque Legend', desc: 'Complete all 20 tracks', test: (s) => TRACK_META.length >= 20 && TRACK_META.every((t) => isTrackDone(s, t.id)) },
+  { id: 'desert', name: 'Dune Rider', desc: 'Complete every Desert Storm track', test: (s) => regionDone(s, 'desert') },
+  { id: 'jungle', name: 'Pathfinder', desc: 'Complete every Jungle Expedition track', test: (s) => regionDone(s, 'jungle') },
+  { id: 'volcano', name: 'Fire Walker', desc: 'Complete every Volcanic Wasteland track', test: (s) => regionDone(s, 'volcano') },
+  { id: 'legend', name: 'Trail Torque Legend', desc: 'Complete all 40 tracks', test: (s) => TRACK_META.length >= 40 && TRACK_META.every((t) => isTrackDone(s, t.id)) },
+  { id: 'relics', name: 'Relic Hunter', desc: 'Find 30 hidden relics', test: (s) => (s.stats.relics || 0) >= 30 },
+  { id: 'hardcore', name: 'No Safety Net', desc: 'Finish a track on Hardcore', test: (s) => (s.stats.hardcore || 0) >= 1 },
+  { id: 'night', name: 'Night Owl', desc: 'Finish a track that ends after dark', test: (s) => (s.stats.nightRuns || 0) >= 1 },
   { id: 'gold', name: 'Golden Line', desc: 'Earn a gold medal', test: (s) => s.stats.golds >= 1 },
   { id: 'gold5', name: 'Podium Regular', desc: 'Earn 5 gold medals', test: (s) => Object.values(s.tracks).filter((t) => t.medal === 3).length >= 5 },
   { id: 'clean', name: 'Not a Scratch', desc: 'Finish a track with no recoveries and under 40% damage', test: (s) => s.stats.cleanRuns >= 1 },
   { id: 'caches', name: 'Explorer', desc: 'Find 10 supply caches', test: (s) => s.stats.caches >= 10 },
   { id: 'distance', name: 'Long Hauler', desc: 'Drive 100 km in expeditions', test: (s) => s.stats.distance >= 100000 }
 ];
+const DIFF_RANK = { casual: 1, standard: 2, hardcore: 3 };
 function regionDone(save, region) {
   const list = regionTracks(region);
   return list.length > 0 && list.every((t) => isTrackDone(save, t.id));
@@ -55,10 +62,11 @@ function regionDone(save, region) {
  */
 export function applyResult(save, trackId, run) {
   const meta = TRACK_META[trackIndex(trackId)];
-  const prev = save.tracks[trackId] || { done: false, bestTime: 0, medal: 0, stars: 0, objectives: {}, caches: [], runs: 0 };
+  const prev = { done: false, bestTime: 0, medal: 0, stars: 0, objectives: {}, caches: [], relics: [], runs: 0, diff: '', ...(save.tracks[trackId] || {}) };
+  const mult = run.rewardMult || 1;
   const first = !prev.done;
   const lines = [];
-  let coins = Math.round(meta.reward * (first ? 1 : 0.35));
+  let coins = Math.round(meta.reward * (first ? 1 : 0.35) * mult);
   lines.push({ text: `${first ? 'Track reward' : 'Replay reward'}: +${coins}`, color: '#ffd23f' });
   const medalBonus = Math.round(meta.reward * [0, 0.1, 0.25, 0.5][run.medal] * (run.medal > prev.medal ? 1 : 0.2));
   if (medalBonus > 0) { coins += medalBonus; lines.push({ text: `${['', 'Bronze', 'Silver', 'Gold'][run.medal]} medal: +${medalBonus}`, color: '#ffd23f' }); }
@@ -71,6 +79,10 @@ export function applyResult(save, trackId, run) {
     return had || f;
   });
   if (cacheCoins > 0) { coins += cacheCoins; lines.push({ text: `Supply caches: +${cacheCoins}`, color: '#8dff9b' }); }
+  let newRelics = 0;
+  const relics = (run.relicsFound || []).map((f, i) => { const had = !!(prev.relics || [])[i]; if (f && !had) newRelics++; return had || f; });
+  if (newRelics > 0) { const rc = newRelics * 80; coins += rc; lines.push({ text: `Hidden relics x${newRelics}: +${rc}`, color: '#8dff9b' }); }
+  if (mult !== 1) lines.push({ text: `${run.difficulty} difficulty: rewards x${mult}`, color: '#8fc1e3' });
 
   const objectives = { ...prev.objectives };
   let newObj = 0;
@@ -85,6 +97,8 @@ export function applyResult(save, trackId, run) {
     stars: Object.keys(objectives).length,
     objectives,
     caches,
+    relics,
+    diff: DIFF_RANK[run.difficultyId] > (DIFF_RANK[prev.diff] || 0) ? run.difficultyId : prev.diff,
     runs: prev.runs + 1
   };
   save.coins += coins;
@@ -96,6 +110,9 @@ export function applyResult(save, trackId, run) {
   st.driveTime += run.driveTime;
   st.recoveries += run.recoveries;
   st.caches += newCaches;
+  st.relics = (st.relics || 0) + newRelics;
+  if (run.difficultyId === 'hardcore') st.hardcore = (st.hardcore || 0) + 1;
+  if (run.night) st.nightRuns = (st.nightRuns || 0) + 1;
   if (first) st.tracksDone++;
   if (run.medal === 3 && prev.medal < 3) st.golds++;
   if (clean) st.cleanRuns++;

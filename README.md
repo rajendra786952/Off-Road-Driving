@@ -1,15 +1,15 @@
 # Trail Torque
 
-Off-road driving game for Android. **Capacitor + Vite**, with two game modes in one app:
+3D off-road driving simulator for the web and Android.
 
-- **Expedition 3D** - a 3D off-road driving simulator (Three.js + a custom 4x4 physics model):
-  5 regions, 20 tracks, about 4 hours of main-track driving.
-- **Classic 2D / Endless 2D** - the original side-scrolling hill-climb (Phaser 3 + Matter.js), unchanged.
+- **React** renders the whole interface (home, regions, tracks, garage, profile, achievements, settings).
+- **Three.js** renders the 3D expedition: 8 regions, 40 tracks, about 8 hours of main-track driving.
+- **Phaser 3** runs the original 2D hill-climb, kept as "Classic 2D".
+- **Capacitor** packages it for Android. Offline only, no backend, no asset files (all art and sound are generated in code).
 
-Offline only, no backend. All art and sound are generated in code (no asset files).
-
-> This project is **Capacitor**, not React Native. The 3D mode runs in its own WebGL canvas;
-> Phaser is put to sleep while you drive, so the two renderers never share a GL context.
+> The project is **Vite + Capacitor**. It is not React Native. React and Phaser/Three never share a canvas:
+> the React shell is DOM, the 3D drive has its own WebGL canvas, and Phaser is asleep and hidden unless
+> Classic 2D is open (`src/main.js`).
 
 ## Quick start
 
@@ -17,123 +17,94 @@ Requires **Node 20+**.
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173   (add ?debug=1 to unlock every track for testing)
-npm test             # 25 unit tests: 2D core + 3D tracks, physics, rules, progression
-npm run bot          # headless test driver over all 20 tracks (time, recoveries, fuel)
-npm run physcheck    # physics sanity numbers (acceleration, braking, climb limits, rollover)
+npm run dev          # http://localhost:5173   (add ?debug=1 to unlock every track)
+npm test             # 26 tests: tracks, physics, rules, progression, save migration, classic core
+npm run bot          # headless test driver over all 40 tracks (add: -- <trackId>, -- all --stock)
+npm run physcheck    # physics sanity numbers
+node scripts/pars.mjs   # re-derive gold times from the test driver after changing tracks or physics
 ```
 
-Desktop keys in 3D: **arrows / WASD** drive, **Space** handbrake, **L** low range, **X** diff lock,
-**E** winch, **R** recover, **C** camera, **P / Esc** pause. Ctrl + Up = half throttle.
+Desktop keys while driving: **arrows / WASD** drive, **Space** handbrake, **L** low range, **X** diff lock,
+**E** winch, **R** recover, **C** camera, **P / Esc** pause, Ctrl + Up half throttle.
 
 ## Android
 
 ```bash
 npm run android          # build web -> cap sync -> open Android Studio
-npm run android:run      # same, but runs on a connected device
-cd android && ./gradlew assembleDebug    # APK at android/app/build/outputs/apk/debug/
+cd android && ./gradlew assembleDebug    # APK: android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Expedition 3D
+## The world
 
-### World
-
-| Region | Tracks | What it teaches | Recommended kit |
+| # | Region | Level | Tracks |
 |---|---|---|---|
-| Forest Trails | Forest Entry, Fallen Forest, River Crossing, Deep Forest Challenge | rocks, logs, fords, mud, steep dirt | stock |
-| Mud Valley | Muddy Entrance, Deep Mud Pit, Waterlogged Valley, Mud Mountain | traction loss, deep mud, wading, muddy climbs | mud tyres, winch |
-| Rocky Mountains | Rocky Entrance, Rock Crawler, Mountain Climb, Mountain Descent | rock crawling, wheel lift, long climbs/descents | rock tyres, lift, diff locks |
-| Deadly Ridge | Ridge Entry, Cliff Bridge, Deadly Pass, Final Ridge | cliff ledges, rail-less bridges, fog, knife-edge ridge | brakes, diff locks, winch |
-| Extreme Expedition | Snow Entry, Frozen River, Blizzard Mountain, Extreme Summit | snow, ice, blizzard, everything combined | studded snow tyres |
+| 1 | Forest Trails | Beginner | Forest Entry, Fallen Forest, River Crossing, Deep Forest Challenge, Hidden Forest Trail |
+| 2 | Mud Valley | Intermediate | Muddy Entrance, Deep Mud Pit, Waterlogged Valley, Mud Mountain, Swamp Survival |
+| 3 | Rocky Mountains | Advanced | Rocky Entrance, Rock Crawler, Mountain Climb, Mountain Descent, Giant Rock Challenge |
+| 4 | Deadly Ridge | Expert | Ridge Entry, Cliff Bridge, Deadly Pass, Narrow Mountain Road, Final Ridge |
+| 5 | Extreme Expedition | Extreme | Snow Entry, Frozen River, Blizzard Mountain, Ice Valley, Extreme Summit |
+| 6 | Desert Storm | Advanced | Desert Entry, Sand Dune Challenge, Lost Desert Trail, Rocky Desert Pass, Desert Survival |
+| 7 | Jungle Expedition | Expert | Jungle Entry, Waterfall Crossing, Deep Jungle, Forgotten Jungle Road, Jungle Survival |
+| 8 | Volcanic Wasteland | Extreme | Ash Valley, Black Rock Trail, Lava Ridge, Volcanic Mountain Climb, Final Extreme Expedition |
 
-Every track has 5-8 checkpoints (taken in order - the finish only counts after all of them),
-2 optional side trails ending at a supply cache, objectives, medals and a best time.
-Tracks unlock in order; finishing a region opens the next one.
+Every track has 5-8 ordered checkpoints (the finish only counts after all of them), two optional side
+trails ending in a supply cache, three hidden relics off the trail, five objectives, medals and a best time.
+Tracks unlock in order; finishing a region opens the next. Three difficulty levels (Casual / Standard /
+Hardcore) change damage, fuel use, recovery penalties and rewards.
 
-### How a track is built
+Region mechanics: mud that bogs, rivers that drown engine power, rock gardens that need clearance and
+diff locks, cliff ledges and rail-less bridges, ice with almost no grip, sand that drags and an engine that
+**overheats** when worked hard at low speed (desert, volcano), waterfalls and flooded rivers, and lava
+that burns the truck but is always beside the driving line, never on it.
 
-Tracks are **authored data**, not random terrain. `src/drive/tracks/*.js` describe each route
-turtle-style (`go(length, turn, grade)`) plus features: `mud()`, `rocks()`, `log()`, `ford()`,
-`bridge()`, `bypass()`, `spur()`, `ice()`, `anchor()`, banked/off-camber sections, cliff sides.
-`core/track.js` compiles that into a centreline and a continuous heightfield **with the road carved
-into it**, so roads always follow real terrain. The renderer builds its meshes from the same
-1 m height grid the physics samples - what you see is what the wheels touch.
+Weather (clear, overcast, rain, heavy rain, fog, mist, snow, blizzard, heat haze, sandstorm, ash fall)
+and time of day are per track and can **change during a run**: a storm arrives, the sun sets, you finish
+by headlight. Both affect grip and visibility. See `weatherPlan` / `hours` in `src/drive/tracks/meta.js`.
 
-### Vehicle physics (`src/drive/core/physics.js`)
+## How it is built
 
-6-DOF rigid body with four independent raycast wheels: suspension spring/damper/bump-stop per wheel,
-slip-ratio + slip-angle tyre forces in a friction circle, real wheel spin (wheels spin up, lock, slip),
-open differentials per axle (a lifted wheel steals the torque) with optional diff locks, high/low range,
-engine braking, soft ground (tyres sink, spinning tyres dig in, the belly drags), chassis contact points
-(ground clearance, rollover, resting on the roof), tree/boulder colliders, water drag and wading depth, winch.
-
-Surface table (`core/surfaces.js`): dirt, gravel, grass, mud, deep mud, bog, rock, wet rock, river bed,
-sand, snow, deep snow, ice, wood, scree - each with grip, rolling resistance, sink, dig and drag.
-Weather (clear, overcast, rain, heavy rain, fog, snow, blizzard) changes grip and visibility.
-
-### Upgrades (all change physics parameters - `core/specs.js`)
-
-Engine, tyre quality, suspension (travel + damping), fuel tank, lift kit (clearance, but a higher centre
-of gravity), brakes - 5 levels each, per vehicle. Equipment: 4 tyre compounds (all-terrain, mud, rock,
-studded snow), diff locks, winch. With a stock truck the test driver cannot finish 6 of the 20 tracks
-(Deep Mud Pit, Waterlogged Valley, Mud Mountain, Final Ridge, Blizzard Mountain, Extreme Summit -
-check with `npm run bot -- all --stock`); on the others upgrades make the run faster and safer
-rather than possible.
-
-### Testing approach
-
-`core/` is pure JavaScript with no rendering, so the real physics and rules run in Node:
-
-- `scripts/bot.mjs` drives every track with a test driver that only uses player controls
-  (steer, pedals, low range, diff lock, winch, recover). Gold par times come from its runs
-  (`scripts/pars.mjs`), so every par is achievable.
-- `tests/drive.test.mjs` checks all 20 tracks compile to valid, distinct, non-overlapping geometry
-  with the road on the terrain, plus physics behaviour, session rules, progression and save migration.
+- **Tracks are authored data.** `src/drive/tracks/*.js` describe each route turtle-style
+  (`go(length, turn, grade)`) plus features: `mud`, `rocks`, `boulder`, `log`, `ford`, `bridge`, `bypass`,
+  `spur`, `ice`, `lava`, `fall`, `anchor`, banked sections, cliff sides. `core/track.js` compiles that into
+  a heightfield with the road carved in. The renderer builds meshes from the same 1 m grid the physics samples.
+- **Physics** (`core/physics.js`): 6-DOF rigid body, four independently sprung raycast wheels, slip-based tyre
+  forces in a friction circle, real wheel spin, open differentials with optional locks, high/low range,
+  soft ground that tyres sink and dig into, chassis contact (clearance, rollover), colliders, water, winch.
+  18 surface types in `core/surfaces.js`.
+- **Rendering** (`render/`): streamed terrain chunks with three LOD levels and skirts, instanced vegetation
+  with a near/far LOD, physically based materials with procedural normal maps and an environment map
+  (Medium/High), a procedural sky shader with a different cloud model and horizon silhouette per region,
+  stars, aurora and crater glow, animated water, waterfalls, glowing lava, shadows, fog, precipitation.
+  Low quality switches to Lambert shading with no shadows.
+- **Upgrades** (`core/specs.js`): engine, tyre quality, suspension, fuel tank, lift kit, brakes (5 levels each),
+  four tyre compounds, diff locks, winch. All change physics parameters; the garage preview shows the
+  real model built from those parameters.
+- **Rules** (`core/session.js`) and **progression** (`core/progress.js`) are pure JavaScript, shared by the
+  game and the headless tests.
 
 ## Project layout
 
 ```
 src/
-  main.js                       Phaser config, scene list
-  game/                         menus + classic 2D game (Phaser)
-    scenes/                     Boot, Menu, Expedition (region/track select), Garage, Settings,
-                                LevelSelect + Level (classic 2D)
-    core/saveModel.js           save v3: coins, vehicles, upgrades, tyres, gear, 2D levels, 3D tracks, XP
-  drive/                        Expedition 3D
-    core/                       pure logic, unit tested, no Three.js
-      track.js                  TrackBuilder DSL + terrain heightfield + queries
-      physics.js                4x4 vehicle model
-      session.js                run rules: checkpoints, fuel, damage, recovery, caches, scoring
-      surfaces.js  specs.js     surface/tyre/weather tables, vehicle specs + upgrade effects
-      progress.js               unlock chain, rewards, achievements
-      bot.js  validate.js       test driver, geometry checks
-    tracks/                     the 20 tracks (forest, mud, rocky, ridge, snow) + metadata
-    render/                     Three.js world (streamed terrain, instanced trees, water, bridges, weather), car model
+  main.js                 shell: creates Phaser (classic only), mounts React, routes hardware back
+  ui/                     React interface: App.jsx (screens), GaragePreview.jsx (3D), Backdrop.jsx (SVG art), ui.css
+  drive/                  3D expedition
+    core/                 pure logic: track, physics, session, surfaces, specs, progress, bot, validate
+    tracks/               40 tracks in 8 region files + extra.js, meta.js (pars, weather, hours), regions.js
+    render/               world.js, sky.js, carModel.js, geo.js
     DriveGame.js  hud.js  audio.js  launch.js
-tests/                          node:test suites
-scripts/                        bot, par generation, physics check, failure diagnosis
+  game/                   classic 2D game (Phaser) + save system
+tests/                    node:test suites
+scripts/                  bot, pars, physcheck, diag
 ```
-
-## Tuning
-
-| To change... | Edit |
-|---|---|
-| a track's layout or obstacles | `src/drive/tracks/<region>.js`, then `npm run bot -- <trackId>` |
-| par times after changing tracks or physics | `node scripts/pars.mjs` (rewrites `tracks/meta.js`) |
-| grip / mud / snow behaviour | `SURFACES` and `TIRES` in `core/surfaces.js` |
-| power, weight, suspension, upgrade strength | `core/specs.js` |
-| fuel burn, damage, recovery penalties | `core/session.js` |
-| draw distance, shadows, tree count per quality level | `QUALITY` in `render/world.js` |
-| why the bot fails somewhere | `node scripts/diag.mjs <trackId>` |
 
 ## Known limitations
 
-- **Not yet tested on a physical Android phone.** The APK builds and the game runs in a desktop
-  browser; frame rate on real devices (especially low-end) is unverified. The 3D mode has three quality
-  presets and dynamic resolution, selectable in Settings.
-- Graphics are procedural low-poly (no textures or models are shipped). Real art can be added later.
-- Day/night is fixed per track (morning, day, dusk); weather is fixed per track, not changing mid-run.
-- Terrain does not deform; tyre tracks are drawn on soft ground but mud/snow geometry does not change.
-- The "interior" camera is a minimal cockpit (dashboard, pillars, steering wheel), not a modelled cabin.
-- Steering is by buttons; there is no tilt or steering-wheel control yet.
-- Track difficulty and par times are tuned against the test driver, not against human playtesting.
+- **Not tested on a physical Android phone.** The APK builds; frame rate on real devices is unverified.
+  Three quality presets and dynamic resolution are available in Settings.
+- **No GLTF/GLB models or image textures are shipped.** Vehicles, terrain, trees and skies are procedural.
+  Materials are physically based with generated normal maps, but this is stylised low-poly, not photoreal.
+- Track difficulty and gold times are tuned against the automated test driver, not human playtesting.
+- Terrain does not deform (tyre tracks are drawn on soft ground). Wind affects sound, particles and clouds only.
+- The interior camera is a minimal dashboard. Steering is by buttons (three speeds), no tilt control.
+- Classic 2D keeps its original Phaser screens; only the 3D mode uses the new React interface.

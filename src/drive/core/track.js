@@ -97,6 +97,18 @@ export class TrackBuilder {
   mud(len, o = {}) { return this.patch(len, o.deep ? 'deepmud' : 'mud', o); }
   ice(len, o = {}) { return this.patch(len, 'ice', o); }
 
+  /** Lava (or any hazard surface) in a strip BESIDE the road for the next len m. Never on the driving line. */
+  lava(len, o = {}) {
+    const side = o.side ?? 1, gap = o.gap ?? 1.35, w = o.width ?? 3.5;
+    this.features.push({ type: 'patch', s0: this.s + (o.at || 0), s1: this.s + (o.at || 0) + len, f0: side > 0 ? gap : -gap - w, f1: side > 0 ? gap + w : -gap, surf: o.surf || 'lava' });
+    return this;
+  }
+  /** Waterfall on the bank beside the road (visual + mist), `ahead` m from here. */
+  fall(side = 1, o = {}) {
+    this.features.push({ type: 'fall', s: this.s + (o.ahead || 0), side, h: o.h ?? 12, w: o.w ?? 6 });
+    return this;
+  }
+
   /** Scatter n rocks over the next len m. size = [min,max] radius. */
   rocks(len, n, size = [0.25, 0.5], o = {}) {
     this.features.push({ type: 'rocks', s0: this.s + (o.at || 0), len, n, size, hr: o.hr ?? 0.7, spread: o.spread ?? 1.0, clear: o.clear });
@@ -221,6 +233,8 @@ export class Track {
     this.anchors = [];
     this.caches = [];
     this.bypasses = [];
+    this.falls = [];
+    this.relics = [];
     const rng = mulberry(this.seed * 7919 + 13);
     const leftOf = (i) => {
       const a = Math.max(0, i - 1), c = Math.min(nMain - 1, i + 1);
@@ -362,6 +376,9 @@ export class Track {
         this.notes.push({ s: f.s, text: f.text });
       } else if (f.type === 'patch') {
         this.patches.push({ s0: f.s0, s1: f.s1, f0: f.f0, f1: f.f1, surface: SURFACES[f.surf] });
+      } else if (f.type === 'fall') {
+        const p = posAt(f.s, f.side);
+        this.falls.push({ x: p.x + p.fr.lx * f.side * 4.5, z: p.z + p.fr.lz * f.side * 4.5, heading: Math.atan2(p.fr.tx, p.fr.tz), side: f.side, h: f.h, w: f.w });
       } else if (f.type === 'anchor') {
         const p = posAt(f.s, f.side * 1.0);
         const fr = p.fr;
@@ -385,6 +402,25 @@ export class Track {
           type: 'log', x: (a.x + c.x) / 2, z: (a.z + c.z) / 2, r: f.r, len,
           ax: (c.x - a.x) / len, az: (c.z - a.z) / len
         });
+      }
+    }
+    this.sidePatches = this.patches.some((p) => p.f1 > 1.5 || p.f0 < -1.5);
+    // hidden relics: three collectibles tucked off the trail (not shown on the map)
+    for (let k = 0; k < 3; k++) {
+      let sv = this.length * (0.17 + 0.3 * k + rng() * 0.08);
+      for (let tries = 0; tries < 12; tries++, sv += 22) {
+        const i = idxS(sv);
+        if (this.water.some((w) => sv > w.s0 - 12 && sv < w.s1 + 12) || this.bridges.some((b) => sv > b.s0 - 15 && sv < b.s1 + 15)) continue;
+        let side = rng() < 0.5 ? 1 : -1;
+        if (Math.abs(side > 0 ? P.L[i] : P.R[i]) > 7) side = -side;
+        // on a ledge with a wall and a drop there is no room off the trail: tuck it against the wall
+        const steep = Math.abs(side > 0 ? P.L[i] : P.R[i]) > 7;
+        if (steep) side = (P.L[i] > P.R[i]) ? 1 : -1;
+        if (this.patches.some((p) => sv > p.s0 - 4 && sv < p.s1 + 4 && (p.f1 > 1.5 || p.f0 < -1.5))) continue;
+        const fr = leftOf(i);
+        const off = steep ? P.hw[i] + 1.1 : P.hw[i] + 6.5 + rng() * 4;
+        this.relics.push({ x: P.x[i] + fr.lx * side * off, z: P.z[i] + fr.lz * side * off, s: sv });
+        break;
       }
     }
     this.checkpoints.sort((a, c) => a.s - c.s);
@@ -700,7 +736,7 @@ export class Track {
         else if (r0 > 1 - env.boulders) type = 'boulder';
         else if (r0 > 0.5 && r0 < 0.5 + env.bushes * 0.5 && slope < 1.6) type = 'bush';
         if (!type) continue;
-        if (this.water.length) { const sq = this.surfaceAt(x, z); if (sq.waterY > y - 0.3) continue; }
+        if (this.water.length || this.sidePatches) { const sq = this.surfaceAt(x, z); if (sq.waterY > y - 0.3 || sq.surface.hot) continue; }
         const sc = 0.75 + rand2(wx, wz, seed + 504) * 0.7;
         const p = { type, x, z, y, scale: sc, rot: rand2(wx, wz, seed + 505) * 6.28, v: rand2(wx, wz, seed + 506), r: 0 };
         if (type === 'tree') p.r = 0.28 * sc;

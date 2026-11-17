@@ -5,10 +5,12 @@ import assert from 'node:assert/strict';
 import { TrackBuilder } from '../src/drive/core/track.js';
 import { Vehicle4x4 } from '../src/drive/core/physics.js';
 import { buildParams, DRIVE_SPECS } from '../src/drive/core/specs.js';
-import { DriveSession, scoreRun } from '../src/drive/core/session.js';
+import { DriveSession, scoreRun, DIFFICULTY } from '../src/drive/core/session.js';
+import { ENVIRONMENTS } from '../src/drive/core/environments.js';
+import { sunElevation } from '../src/drive/render/sky.js';
 import { botRun } from '../src/drive/core/bot.js';
 import { validateTrack, trackStats } from '../src/drive/core/validate.js';
-import { SURFACES, TIRES, tireGrip } from '../src/drive/core/surfaces.js';
+import { SURFACES, TIRES, WEATHER, tireGrip } from '../src/drive/core/surfaces.js';
 import { TRACKS } from '../src/drive/tracks/index.js';
 import { TRACK_META } from '../src/drive/tracks/meta.js';
 import { REGIONS } from '../src/drive/tracks/regions.js';
@@ -31,11 +33,13 @@ function car(track, ups, gear, s = 20) {
 const drive = (v, sec, inp) => { for (let i = 0; i < sec / DT; i++) v.step(DT, inp); };
 const reached = (tr, v) => tr.S[tr.locateMain(v.p[0], v.p[2], 0)];
 
-test('world: 5 regions x 4 tracks, unique ids, complete metadata', () => {
-  assert.equal(REGIONS.length, 5);
-  assert.equal(TRACKS.length, 20);
-  assert.equal(new Set(TRACK_META.map((t) => t.id)).size, 20);
-  for (const r of REGIONS) assert.equal(TRACK_META.filter((t) => t.region === r.id).length, 4, r.id);
+test('world: 8 regions x 5 tracks, unique ids, complete metadata', () => {
+  assert.equal(REGIONS.length, 8);
+  assert.equal(TRACKS.length, 40);
+  assert.equal(new Set(TRACK_META.map((t) => t.id)).size, 40);
+  for (const r of REGIONS) assert.equal(TRACK_META.filter((t) => t.region === r.id).length, 5, r.id);
+  assert.ok(TRACK_META.reduce((s, t) => s + t.par.gold, 0) >= 6 * 3600 + 40 * 60, 'main-track gold times must total at least 6 h 40 min');
+  for (const t of TRACK_META) { assert.ok(WEATHER[t.weather], t.id); for (const p of t.weatherPlan || []) assert.ok(WEATHER[p[1]], `${t.id} plan`); }
   for (const t of TRACK_META) {
     assert.ok(t.name && t.blurb && t.rec && t.reward > 0, t.id);
     assert.ok(t.par.gold >= 600, `${t.id}: gold par ${t.par.gold}s is under 10 minutes`);
@@ -49,10 +53,14 @@ test('every track compiles to valid, distinct geometry with checkpoints and a fi
     const tr = def.build();
     assert.deepEqual(validateTrack(tr), [], def.id);
     const st = trackStats(tr);
-    assert.ok(st.length > 2400, `${def.id} is only ${st.length.toFixed(0)} m`);
+    assert.ok(st.length > 2100, `${def.id} is only ${st.length.toFixed(0)} m`);   // crawling tracks are short in metres, not in minutes
     assert.ok(st.checkpoints >= 5, `${def.id} checkpoints`);
     assert.ok(tr.finishS > tr.checkpoints[tr.checkpoints.length - 1].s);
     assert.ok(tr.caches.length >= 2, `${def.id} needs optional routes`);
+    assert.equal(tr.relics.length, 3, `${def.id} needs 3 hidden relics`);
+    for (const r of tr.relics) { tr.surfaceAt(r.x, r.z); assert.ok(!tr.sq.surface.hot && !(tr.sq.waterY > tr.heightAt(r.x, r.z)), `${def.id}: relic in lava/water`); }
+    // lava never lies on the driving line
+    for (let i = 5; i < tr.nMain - 5; i += 7) { tr.surfaceAt(tr.PX[i], tr.PZ[i]); assert.ok(!tr.sq.surface.hot, `${def.id}: lava on the road at s=${tr.S[i]}`); }
     // layout signature: where the route ends up + how much it climbs
     const n = tr.nMain - 1;
     sigs.add(`${Math.round(tr.PX[n] / 20)}:${Math.round(tr.PZ[n] / 20)}:${Math.round(st.climb / 5)}`);
@@ -62,7 +70,7 @@ test('every track compiles to valid, distinct geometry with checkpoints and a fi
       if (!onBridge) assert.ok(Math.abs(tr.heightAt(tr.PX[i], tr.PZ[i]) - tr.PY[i]) < 0.9, `${def.id}: road floats at s=${tr.S[i]}`);
     }
   }
-  assert.equal(sigs.size, 20, 'tracks must not share a layout');
+  assert.equal(sigs.size, 40, 'tracks must not share a layout');
 });
 
 test('terrain: heights are continuous and props never sit on the road', () => {
@@ -196,6 +204,45 @@ test('session rules: checkpoints in order, finish only after all checkpoints, re
   assert.ok(ss.totalTime >= before + 19 && ss.recoveries === 1);
 });
 
+test('difficulty, changing weather, daylight, engine heat and lava', () => {
+  // difficulty changes the cost of a recovery and the reward multiplier
+  const tr = TRACKS[0].build();
+  const easy = new DriveSession(tr, buildParams('mountain-jeep'), { difficulty: 'casual' });
+  const hard = new DriveSession(tr, buildParams('mountain-jeep'), { difficulty: 'hardcore' });
+  easy.recover(); hard.recover();
+  assert.ok(hard.penalty > easy.penalty * 3);
+  assert.ok(DIFFICULTY.hardcore.reward > 1 && DIFFICULTY.casual.reward < 1);
+  // weather plan: grip falls as the rain arrives; the clock advances with progress
+  const swamp = TRACKS.find((t) => t.id === 'swamp-survival');
+  const ss = new DriveSession(swamp.build(), buildParams('mountain-jeep'));
+  const g0 = ss.weather.grip, h0 = ss.hour;
+  ss.maxS = ss.track.finishS * 0.9;
+  ss.update(1 / 60, {});
+  assert.ok(ss.weather.grip < g0 - 0.15 && ss.weather.rain > 0.9, 'heavy rain should have arrived');
+  assert.ok(ss.hour > h0 + 2, 'clock should advance');
+  assert.ok(sunElevation(13) > 0.9 && sunElevation(23) < 0 && sunElevation(18.5) < 0.2);
+  // heat: flat-out crawling in the desert overheats, the same in the forest does not
+  const hot = (env) => {
+    const t = new TrackBuilder({ id: 'h', name: 'h', env, seed: 2, startY: 30 });
+    t.set({ width: 10, surface: 'deepsand', rough: 0, wavy: 0, L: 0, R: 0 });
+    t.go(60, 0, 0).go(600, 0, 12).cp('a').go(40, 0, 0).cp('b').go(40, 0, 0).cp('c').go(60, 0, 0);
+    const s = new DriveSession(t.build(), buildParams('mountain-jeep'));
+    for (let i = 0; i < 60 * 150; i++) s.update(1 / 60, { gas: 1, low: true });
+    return s;
+  };
+  assert.ok(ENVIRONMENTS.desert.hot > 0 && ENVIRONMENTS.volcano.hot > 0);
+  assert.ok(hot('desert').heat > 0.95, 'desert crawl should overheat');
+  assert.ok(hot('forest').heat < 0.5);
+  // lava burns the truck
+  const lt = new TrackBuilder({ id: 'l', name: 'l', env: 'volcano', seed: 2, startY: 30 });
+  lt.set({ width: 8, surface: 'lavarock', rough: 0, wavy: 0, L: 0, R: 0 });
+  lt.go(60, 0, 0); lt.patch(60, 'lava'); lt.go(200, 0, 0); lt.cp('a'); lt.go(40, 0, 0); lt.cp('b'); lt.go(40, 0, 0); lt.cp('c'); lt.go(60, 0, 0);
+  const ls = new DriveSession(lt.build(), buildParams('mountain-jeep'));
+  ls.spawn(70);
+  for (let i = 0; i < 60 * 4; i++) ls.update(1 / 60, {});
+  assert.ok(ls.damage > 20, 'standing in lava must damage the truck');
+});
+
 test('the test driver finishes the first track cleanly and scoring works', () => {
   const def = TRACKS[0];
   const ss = new DriveSession(def.build(), buildParams(def.bot.vehicle, def.bot.ups, def.bot.gear));
@@ -211,7 +258,7 @@ test('progression: unlock chain, rewards, records, achievements, save round-trip
   const save = defaultSave();
   assert.ok(isTrackUnlocked(save, 'forest-entry') && !isTrackUnlocked(save, 'fallen-forest'));
   assert.ok(isRegionUnlocked(save, 'forest') && !isRegionUnlocked(save, 'mud'));
-  const run = (time, medal) => ({ time, medal, stars: 3, objectives: [{ id: 'finish', done: true }, { id: 'time', done: true }], recoveries: 0, damage: 5, cachesFound: [true, false], cacheRewards: [120, 120], distance: 4000, driveTime: time });
+  const run = (time, medal) => ({ relicsFound: [true, false, false], rewardMult: 1, difficulty: 'Standard', difficultyId: 'standard', time, medal, stars: 3, objectives: [{ id: 'finish', done: true }, { id: 'time', done: true }], recoveries: 0, damage: 5, cachesFound: [true, false], cacheRewards: [120, 120], distance: 4000, driveTime: time });
   const r1 = applyResult(save, 'forest-entry', run(700, 3));
   assert.ok(r1.first && r1.coins > 350 && save.coins === r1.coins);
   assert.ok(save.achievements['first-trail'] && save.achievements.gold && save.achievements.clean);
@@ -221,11 +268,15 @@ test('progression: unlock chain, rewards, records, achievements, save round-trip
   assert.ok(!r2.first && r2.coins < r1.coins / 2, 'replays pay less');
   assert.equal(save.tracks['forest-entry'].bestTime, 700);
   assert.equal(save.tracks['forest-entry'].medal, 3);
+  assert.deepEqual(save.tracks['forest-entry'].relics, [true, false, false]);
+  assert.equal(save.stats.relics, 1);
+  const hc = applyResult(defaultSave(), 'forest-entry', { ...run(700, 3), rewardMult: 1.5, difficultyId: 'hardcore', difficulty: 'Hardcore' });
+  assert.ok(hc.coins > r1.coins, 'hardcore pays more');
   assert.ok(save.coins > coins);
   // finishing a whole region unlocks the next one; all 20 unlocks the final achievement
   for (const t of TRACK_META) applyResult(save, t.id, run(900, 2));
   for (const r of REGIONS) assert.ok(isRegionUnlocked(save, r.id));
-  assert.ok(save.achievements.legend, 'completing all 20 tracks grants the final achievement');
+  assert.ok(save.achievements.legend, 'completing all 40 tracks grants the final achievement');
   assert.ok(ACHIEVEMENTS.length >= 10);
   // persisted form survives migration untouched; old v2 saves keep their coins/vehicles
   const round = migrateSave(JSON.parse(JSON.stringify(save)));

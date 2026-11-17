@@ -6,7 +6,8 @@ import { World, QUALITY } from './render/world.js';
 import { CarModel } from './render/carModel.js';
 import { Hud } from './hud.js';
 import { DriveAudio } from './audio.js';
-import { DriveSession, scoreRun, fmtTime, RECOVER_PENALTY } from './core/session.js';
+import { DriveSession, scoreRun, fmtTime } from './core/session.js';
+import { fmtClock } from './render/sky.js';
 import { buildParams } from './core/specs.js';
 import { TIRES } from './core/surfaces.js';
 import { BotDriver } from './core/bot.js';
@@ -39,10 +40,12 @@ export class DriveGame {
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.shadowMap.enabled = !!this.q.shadows;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 0.9;
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.3, 1400);
 
     this.params = buildParams(opts.vehicle.id, opts.ups, opts.gear);
-    this.hud = new Hud(this.root, { difflock: this.params.difflock, winch: this.params.winch });
+    this.hud = new Hud(this.root, { difflock: this.params.difflock, winch: this.params.winch, hot: opts.def.region === 'desert' || opts.def.region === 'volcano' });
     this.hud.loading(`Loading ${opts.def.name}...`, 0.05);
 
     this.onResize = () => {
@@ -82,18 +85,18 @@ export class DriveGame {
     if (this.disposed) return;
     const o = this.opts;
     this.track = o.def.build();
-    this.session = new DriveSession(this.track, this.params);
+    this.session = new DriveSession(this.track, this.params, { difficulty: o.difficulty });
     this.weather = this.session.weather;
-    this.world = new World(this.track, this.q);
-    this.world.init(this.weather);
-    this.car = new CarModel(o.vehicle, this.params, this.session.vehicle);
+    this.world = new World(this.track, this.q, this.renderer);
+    this.world.init(this.session);
+    this.atmoT = 0;
+    this.car = new CarModel(o.vehicle, this.params, this.session.vehicle, { pbr: this.q.pbr });
     this.world.scene.add(this.car.group);
-    if (this.world.isNight || this.weather.fog < 0.35) {
-      const sl = new THREE.SpotLight(0xfff2cc, 260, 70, 0.5, 0.5, 1.6);
-      sl.position.set(0, 0.3, 1.6);
-      sl.target.position.set(0, -0.6, 14);
-      this.car.group.add(sl, sl.target);
-    }
+    // headlights: always fitted, brightness follows darkness and fog
+    this.lamp = new THREE.SpotLight(0xfff2cc, 0, 85, 0.55, 0.55, 1.5);
+    this.lamp.position.copy(this.car.lampPos);
+    this.lamp.target.position.set(0, this.car.lampPos.y - 1.4, 16);
+    this.car.group.add(this.lamp, this.lamp.target);
     this._buildFx();
     this.audio = new DriveAudio(o.audioCtx, o.settings.sound !== false);
     this.hud.initMap(this.track);
@@ -349,7 +352,16 @@ export class DriveGame {
     this.car.sync();
     this._camera(dt);
     this.world.update(dt, veh.p[0], veh.p[2], this.camera, this.time);
-    this.hud.update(ss, { weather: this.weather.name + (this.opts.settings.showFps ? `<br>${Math.round(this.fps)} fps` : '') });
+    // atmosphere (weather blend + clock) a few times a second
+    this.atmoT += dt;
+    if (this.atmoT > 0.25) {
+      this.world.setAtmosphere(ss.weather, ss.hour, this.atmoT);
+      this.atmoT = 0;
+      const dark = Math.max(1 - this.world.day, ss.weather.fog < 0.4 ? 0.45 : 0);
+      this.lamp.intensity = 420 * dark;
+      this.car.setLights(dark, veh.speed > 0.5 && this.hud.read().brake > 0.1);
+    }
+    this.hud.update(ss, { weather: `${this.weather.name} &middot; ${fmtClock(ss.hour)}` + (this.opts.settings.showFps ? `<br>${Math.round(this.fps)} fps` : '') });
     this.renderer.render(this.world.scene, this.camera);
 
     // dynamic resolution keeps the frame rate stable on slow phones
@@ -383,6 +395,11 @@ export class DriveGame {
       else if (e.type === 'thump') { this.audio.thump(e.v); this.shake = Math.max(this.shake, Math.min(0.2, e.v * 0.03)); }
       else if (e.type === 'checkpoint') { this.audio.checkpoint(); this.hud.toast(`CHECKPOINT ${e.index}/${e.total}${e.name ? ' - ' + e.name : ''}   +fuel, repairs`); }
       else if (e.type === 'cache') { this.audio.cache(); this.hud.toast(`${e.name} found!  +${e.reward} coins`); this.world.hideCache(e.index); }
+      else if (e.type === 'relic') { this.audio.cache(); this.hud.toast(`Hidden relic found!  ${e.found}/${e.total}`); this.world.hideRelic(e.index); }
+      else if (e.type === 'weather') this.hud.toast(`Weather: ${e.name}`, 2600);
+      else if (e.type === 'overheat') { this.audio.scrape(3); this.hud.toast('ENGINE OVERHEATED - power cut. Ease off and let it cool.', 5000); }
+      else if (e.type === 'cooled') this.hud.toast('Engine cooled - full power restored.', 2600);
+      else if (e.type === 'burn') { this.audio.scrape(2); this.shake = Math.max(this.shake, 0.08); }
       else if (e.type === 'recover') { this._camera(1); this.steer = 0; }
       else if (e.type === 'finish') this._finish();
     }
@@ -392,7 +409,7 @@ export class DriveGame {
     if (this.state !== 'run') return;
     const ss = this.session;
     if (ss.fuel <= 0) { ss.toCheckpoint(true); this.hud.toast('Towed to the last checkpoint and refuelled  (+60 s)'); }
-    else { ss.recover(); this.hud.toast(`Recovered to the trail  (+${RECOVER_PENALTY} s)`); }
+    else { ss.recover(); this.hud.toast(`Recovered to the trail  (+${ss.diff.recover} s)`); }
     this.audio.click();
   }
 
@@ -427,7 +444,7 @@ export class DriveGame {
     const ss = this.session, s = this.opts.settings;
     const tire = TIRES[this.params.tire].name;
     const body =
-      `<p>${this.opts.def.name} &middot; ${this.weather.name}</p>` +
+      `<p>${this.opts.def.name} &middot; ${this.weather.name} &middot; ${ss.diff.name}</p>` +
       `<p style="font-size:2.1vh;color:#9fb3c0">Time ${fmtTime(ss.totalTime)} &middot; Checkpoint ${ss.cpNext}/${this.track.checkpoints.length} &middot; Tyres: ${tire}</p>` +
       `<p style="font-size:2vh;color:#9fb3c0">Keys: arrows/WASD drive &middot; Space handbrake &middot; L low range &middot; X diff lock &middot; E winch &middot; R recover &middot; C camera</p>`;
     const sensLabel = () => `STEERING: ${(s.steerSens || 1) <= 0.75 ? 'SLOW' : (s.steerSens || 1) >= 1.35 ? 'FAST' : 'NORMAL'}`;

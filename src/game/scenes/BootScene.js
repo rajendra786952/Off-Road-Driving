@@ -18,7 +18,8 @@ export default class BootScene extends Phaser.Scene {
     SaveSystem.init().then(() => {
       createCommonTextures(this);
       createThemeTextures(this, 'green-valley');
-      this.scene.start('MenuScene');
+      this.scene.stop();
+      this.game.events.emit('boot-ready');
     });
   }
 }

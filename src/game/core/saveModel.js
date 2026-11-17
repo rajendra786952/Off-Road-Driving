@@ -45,9 +45,10 @@ export function defaultSave() {
       steerSens: 1,
       camShake: true,
       camera: 'chase',
-      quality: 'auto'
+      quality: 'auto',
+      difficulty: 'standard'
     },
-    stats: { runs: 0, totalCoins: 0, stunts: 0, distance: 0, driveTime: 0, recoveries: 0, tracksDone: 0, caches: 0, golds: 0, cleanRuns: 0 }
+    stats: { runs: 0, totalCoins: 0, stunts: 0, distance: 0, driveTime: 0, recoveries: 0, tracksDone: 0, caches: 0, golds: 0, cleanRuns: 0, relics: 0, hardcore: 0, nightRuns: 0 }
   };
 }
 
@@ -92,9 +93,11 @@ export function migrateSave(raw) {
         done: !!v.done,
         bestTime: Math.max(0, Number(v.bestTime) || 0),
         medal: Math.min(3, Math.max(0, Math.floor(Number(v.medal) || 0))),
-        stars: Math.min(4, Math.max(0, Math.floor(Number(v.stars) || 0))),
+        stars: Math.min(5, Math.max(0, Math.floor(Number(v.stars) || 0))),
         objectives: v.objectives && typeof v.objectives === 'object' ? { ...v.objectives } : {},
         caches: Array.isArray(v.caches) ? v.caches.map(Boolean) : [],
+        relics: Array.isArray(v.relics) ? v.relics.map(Boolean) : [],
+        diff: typeof v.diff === 'string' ? v.diff : '',
         runs: Math.max(0, Math.floor(Number(v.runs) || 0))
       };
     }

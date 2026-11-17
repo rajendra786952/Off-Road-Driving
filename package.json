@@ -1,9 +1,9 @@
 {
   "name": "trail-torque",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "Trail Torque - 3D off-road driving simulator (Three.js) + classic 2D hill-climb (Phaser 3), packaged with Capacitor",
+  "description": "Trail Torque - 3D off-road driving simulator: React UI + Three.js expedition (8 regions, 40 tracks) + classic 2D mode (Phaser 3), packaged with Capacitor",
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
@@ -24,7 +24,10 @@
     "@capacitor/preferences": "^7.0.0",
     "@capacitor/screen-orientation": "^7.0.0",
     "@capacitor/status-bar": "^7.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "phaser": "^3.90.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "three": "^0.170.0"
   },
   "devDependencies": {

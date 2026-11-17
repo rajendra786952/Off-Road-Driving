@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { GAME_W, GAME_H } from '../config/constants.js';
 import { SaveSystem } from '../systems/SaveSystem.js';
 import AudioSystem from '../systems/AudioSystem.js';
-import { exitApp } from '../systems/platform.js';
+
 import { makeText, makeButton, bindBack, menuBackdrop, fmtCoins } from '../systems/ui.js';
 import { getVehicle } from '../config/vehicles.js';
 import { VEHICLE_TEX } from '../systems/TextureFactory.js';
@@ -26,10 +26,9 @@ export default class MenuScene extends Phaser.Scene {
     this.buildShowcase(gy);
 
     makeText(this, GAME_W / 2, 68, 'TRAIL TORQUE', { size: '64px', color: '#ffd23f', strokeThickness: 8 });
-    makeText(this, GAME_W / 2, 116, 'Off-road driving simulator', { size: '22px', bold: false });
+    makeText(this, GAME_W / 2, 116, 'Classic 2D hill-climb', { size: '22px', bold: false });
 
-    makeButton(this, GAME_W / 2, 186, 340, 64, 'EXPEDITION  3D', () => this.scene.start('ExpeditionScene'), { color: 0x2f9e55, size: '28px', sfx });
-    makeText(this, GAME_W / 2, 228, '5 regions • 20 off-road tracks', { size: '14px', bold: false, strokeThickness: 3 }).setDepth(3);
+    makeButton(this, GAME_W / 2, 186, 340, 64, 'MAIN MENU', () => this.game.events.emit('shell-home'), { color: 0x2f9e55, size: '28px', sfx });
     makeButton(this, GAME_W / 2 - 88, 276, 164, 50, 'CLASSIC 2D', () => this.scene.start('LevelSelectScene'), { color: 0x3f7a8c, size: '19px', sfx });
     makeButton(this, GAME_W / 2 + 88, 276, 164, 50, 'ENDLESS 2D', () => this.scene.start('LevelScene', { mode: 'endless' }), { color: 0xd9812b, size: '19px', sfx });
     makeButton(this, GAME_W / 2, 338, 340, 54, 'GARAGE', () => this.scene.start('GarageScene'), { color: 0x2f6fa8, sfx });
@@ -55,7 +54,7 @@ export default class MenuScene extends Phaser.Scene {
 
     makeText(this, 8, GAME_H - 6, 'v2.0 expedition', { size: '14px', bold: false, originX: 0, originY: 1, strokeThickness: 3 }).setDepth(5);
 
-    bindBack(this, () => exitApp());
+    bindBack(this, () => this.game.events.emit('shell-home'));
   }
 
   buildShowcase(groundY) {

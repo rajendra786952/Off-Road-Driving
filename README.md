@@ -25,7 +25,8 @@ node scripts/pars.mjs   # re-derive gold times from the test driver after changi
 ```
 
 Desktop keys while driving: **arrows / WASD** drive, **Space** handbrake, **L** low range, **X** diff lock,
-**E** winch, **R** recover, **C** camera, **P / Esc** pause, Ctrl + Up half throttle.
+**F** winch, **R** recover, **C** camera, **Q / E** or drag to look around, **P / Esc** pause, Ctrl + Up half throttle.
+A gamepad works too: left stick steers, triggers are the pedals, A handbrake, B winch, X low range, Y diff lock, bumpers recover / camera.
 
 ## Android
 
@@ -71,6 +72,15 @@ by headlight. Both affect grip and visibility. See `weatherPlan` / `hours` in `s
   forces in a friction circle, real wheel spin, open differentials with optional locks, high/low range,
   soft ground that tyres sink and dig into, chassis contact (clearance, rollover), colliders, water, winch.
   18 surface types in `core/surfaces.js`.
+- **Photo assets** (all CC0 from polyhaven.com, used on Medium quality and above, loaded in the background):
+  `public/textures/ground/` holds eight ground layers (grass, dirt, mud, rock, gravel, sand, snow, forest floor;
+  1K colour + normal JPG) blended on the terrain per vertex and projected onto boulders;
+  `public/textures/trees/` holds three bark photos for the trunks (leaf and needle cards are drawn in code, `render/trees.js`);
+  `public/environments/` holds the HDR skies (`hdr` / `hdrLift` per region in `core/environments.js`).
+  Low quality stays fully procedural.
+- **Scenery** (`render/scenery.js`): instanced grass tufts that sway in the wind, pebbles, fallen logs and
+  stumps, roadside marker posts (snow poles in the snow region) and drifting leaves / dust / embers,
+  streamed around the truck. Visual only - no colliders, so driving and par times are unaffected.
 - **Rendering** (`render/`): streamed terrain chunks with three LOD levels and skirts, instanced vegetation
   with a near/far LOD, physically based materials with procedural normal maps and an environment map
   (Medium/High), a procedural sky shader with a different cloud model and horizon silhouette per region,
@@ -102,7 +112,7 @@ scripts/                  bot, pars, physcheck, diag
 
 - **Not tested on a physical Android phone.** The APK builds; frame rate on real devices is unverified.
   Three quality presets and dynamic resolution are available in Settings.
-- **No GLTF/GLB models or image textures are shipped.** Vehicles, terrain, trees and skies are procedural.
+- **No GLTF/GLB models are shipped.** Vehicles, trees and scenery are built in code; ground textures and skies are photos.
   Materials are physically based with generated normal maps, but this is stylised low-poly, not photoreal.
 - Track difficulty and gold times are tuned against the automated test driver, not human playtesting.
 - Terrain does not deform (tyre tracks are drawn on soft ground). Wind affects sound, particles and clouds only.

@@ -5,25 +5,51 @@ import * as THREE from 'three';
 import { CHUNK, CW } from '../core/track.js';
 import { noise2, smoothstep } from '../core/noise.js';
 import { mergeColored, M } from './geo.js';
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { Sky, sunElevation } from './sky.js';
+import { Scenery } from './scenery.js';
+import { treeAtlas, treeGeometries } from './trees.js';
 
 const key2 = (a, b) => (a + 32768) * 65536 + (b + 32768);
+
+/** Photo ground layers (public/textures/ground/<name>_diff.jpg + _nor.jpg) and which one each surface uses. */
+const GROUND_LAYERS = ['grass', 'dirt', 'mud', 'rock', 'gravel', 'sand', 'snow', 'forest'];
+const LAYER_OF = {
+  grass: 0, dirt: 1, wood: 1, mud: 2, deepmud: 2, bog: 2, rock: 3, wetrock: 3, lavarock: 3, lava: 3,
+  gravel: 4, scree: 4, riverbed: 4, ash: 4, sand: 5, deepsand: 5, snow: 6, deepsnow: 6, ice: 6
+};
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
-function grainTexture() {
+/**
+ * Tiling ground detail (linear data, mean ~0.82): soft mottling at three frequencies plus
+ * hard grit speckles. The terrain shader samples it at three scales, so one small texture
+ * gives close-up grain, mid-range patchiness and slow colour drift without a visible repeat.
+ */
+function detailTexture(size = 256) {
   const c = document.createElement('canvas');
-  c.width = c.height = 64;
+  c.width = c.height = size;
   const g = c.getContext('2d');
-  const img = g.createImageData(64, 64);
-  for (let i = 0; i < 64 * 64; i++) {
-    const v = 205 + Math.floor(Math.random() * 50);
-    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
-    img.data[i * 4 + 3] = 255;
+  const img = g.createImageData(size, size);
+  const tile = (x, y, freq, seed) => {
+    const u = x / size, v = y / size;
+    const n = (p, q) => noise2(p * freq, q * freq, seed);
+    return n(u, v) * (1 - u) * (1 - v) + n(u - 1, v) * u * (1 - v) + n(u, v - 1) * (1 - u) * v + n(u - 1, v - 1) * u * v;
+  };
+  let rnd = 12345;
+  const rand = () => ((rnd = (rnd * 1664525 + 1013904223) >>> 0) / 4294967296);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let v = 0.82 + 0.10 * tile(x, y, 7, 51) + 0.08 * tile(x, y, 23, 52) + 0.05 * tile(x, y, 61, 53);
+      const r = rand();
+      if (r < 0.05) v -= 0.10 + 0.14 * rand(); else if (r > 0.965) v += 0.08 + 0.08 * rand();
+      const k = (y * size + x) * 4, px = Math.max(0, Math.min(255, Math.round(v * 255)));
+      img.data[k] = img.data[k + 1] = img.data[k + 2] = px; img.data[k + 3] = 255;
+    }
   }
   g.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.colorSpace = THREE.SRGBColorSpace;
+  t.colorSpace = THREE.NoColorSpace;
   return t;
 }
 
@@ -86,9 +112,80 @@ function fallTexture() {
 }
 
 /** Vertex colours above 1.0 glow (lava) regardless of lighting. */
-function glowPatch(mat) {
+/**
+ * Terrain shader patch.
+ *  - vertex colours above 1.0 glow (lava) regardless of lighting
+ *  - ground detail: until the photo textures have loaded (and always on Low) a procedural detail
+ *    map at three scales; afterwards eight photographed ground layers blended by per-vertex
+ *    weights. Each layer is divided by its own average colour, so the photo supplies the grain,
+ *    stones and leaves while the vertex colour keeps the region's palette, lava, wet banks etc.
+ *    A second, larger-scale sample takes over with distance so the tiling never shows.
+ *  - the photographed normal maps replace the procedural bump up close
+ */
+function glowPatch(mat, ground) {
   mat.onBeforeCompile = (sh) => {
-    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += max(vColor.rgb - vec3(1.0), vec3(0.0)) * 1.6;');
+    Object.assign(sh.uniforms, ground);
+    sh.vertexShader = 'attribute vec4 aW0;\nattribute vec4 aW1;\nvarying vec4 vW0;\nvarying vec4 vW1;\n' +
+      sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vW0 = aW0; vW1 = aW1;');
+    const layer = (i, w) => `    if (${w} > 0.004) { vec3 ca = texture(uGround, vec3(uvA, ${i}.0)).rgb; vec3 cb = texture(uGround, vec3(uvB, ${i}.0)).rgb; acc += ${w} * mix(ca, cb, fb) / uMean[${i}]; nacc += ${w} * texture(uGroundN, vec3(uvA, ${i}.0)).rgb; }`;
+    const W = ['vW0.x', 'vW0.y', 'vW0.z', 'vW0.w', 'vW1.x', 'vW1.y', 'vW1.z', 'vW1.w'];
+    sh.fragmentShader = ('uniform sampler2DArray uGround;\nuniform sampler2DArray uGroundN;\nuniform vec3 uMean[8];\nuniform float uPhoto;\nvarying vec4 vW0;\nvarying vec4 vW1;\n' + sh.fragmentShader)
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += max(vColor.rgb - vec3(1.0), vec3(0.0)) * 1.6;')
+      .replace('#include <map_fragment>', [
+        '#ifdef USE_MAP',
+        '  float tDist = length(vViewPosition);',
+        '  float tNear = 1.0 - smoothstep(14.0, 60.0, tDist);',
+        '  vec3 dMacro = texture2D(map, vMapUv * 0.137 + 0.31).rgb;',
+        '  vec3 gN = vec3(0.5, 0.5, 1.0);',
+        '  vec3 det;',
+        '  if (uPhoto > 0.5) {',
+        '    vec2 uvA = vMapUv * 1.6;',                       // ~3 m tiles up close
+        '    vec2 uvB = vMapUv * 0.37 + 0.43;',               // ~13 m tiles further out
+        '    float fb = smoothstep(16.0, 90.0, tDist) * 0.8 + 0.12;',
+        '    vec3 acc = vec3(0.0); vec3 nacc = vec3(0.0);',
+        ...W.map((w, i) => layer(i, w)),
+        '    float ws = max(vW0.x + vW0.y + vW0.z + vW0.w + vW1.x + vW1.y + vW1.z + vW1.w, 0.001);',
+        '    det = acc / ws; gN = nacc / ws;',
+        '  } else {',
+        '    vec3 dMicro = texture2D(map, vMapUv * 3.7).rgb * 1.22;',
+        '    vec3 dMid = texture2D(map, vMapUv).rgb * 1.22;',
+        '    det = mix(vec3(1.0), dMicro, tNear * 0.9) * mix(vec3(1.0), dMid, 0.8);',
+        '  }',
+        '  diffuseColor.rgb *= det * (0.36 + 0.62 * dMacro);',
+        '#endif'
+      ].join('\n'))
+      .replace('#include <normal_fragment_maps>', [
+        '#ifdef USE_NORMALMAP_TANGENTSPACE',
+        '  vec3 mapN = texture2D(normalMap, vNormalMapUv).xyz * 2.0 - 1.0;',
+        '  if (uPhoto > 0.5) mapN = normalize(mix(mapN * vec3(0.5, 0.5, 1.0), gN * 2.0 - 1.0, 0.25 + 0.65 * tNear));',
+        '  mapN.xy *= normalScale;',
+        '  normal = normalize(tbn * mapN);',
+        '#endif'
+      ].join('\n'));
+  };
+  return mat;
+}
+
+/** Boulders and rocks: the photographed rock layer projected from three sides in world space, tinted by the region's rock colour. */
+function rockPatch(mat, ground) {
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, ground);
+    sh.vertexShader = 'varying vec3 vRockP;\nvarying vec3 vRockN;\n' + sh.vertexShader.replace('#include <begin_vertex>', [
+      '#include <begin_vertex>',
+      '  vec4 rockP = vec4(transformed, 1.0); vec3 rockN = objectNormal;',
+      '  #ifdef USE_INSTANCING',
+      '    rockP = instanceMatrix * rockP; rockN = mat3(instanceMatrix) * rockN;',
+      '  #endif',
+      '  vRockP = (modelMatrix * rockP).xyz; vRockN = mat3(modelMatrix) * rockN;'
+    ].join('\n'));
+    sh.fragmentShader = ('uniform sampler2DArray uGround;\nuniform vec3 uMean[8];\nuniform float uPhoto;\nvarying vec3 vRockP;\nvarying vec3 vRockN;\n' + sh.fragmentShader).replace('#include <color_fragment>', [
+      '#include <color_fragment>',
+      '  if (uPhoto > 0.5) {',
+      '    vec3 bw = abs(normalize(vRockN)); bw = bw * bw; bw /= (bw.x + bw.y + bw.z);',
+      '    vec3 rc = texture(uGround, vec3(vRockP.zy * 0.42, 3.0)).rgb * bw.x + texture(uGround, vec3(vRockP.xz * 0.42, 3.0)).rgb * bw.y + texture(uGround, vec3(vRockP.xy * 0.42, 3.0)).rgb * bw.z;',
+      '    diffuseColor.rgb *= rc / uMean[3];',
+      '  }'
+    ].join('\n'));
   };
   return mat;
 }
@@ -102,6 +199,7 @@ export class World {
     this.scene = new THREE.Scene();
     this.disposables = [];
     this.chunkMeshes = new Map();
+    this.glossy = [];        // materials that reflect the HDR sky: [{ m, base }]
     this.queue = [];
     this.lastScan = -1;
     this.propKey = '';
@@ -160,27 +258,140 @@ export class World {
     }
 
     // terrain: PBR with a procedural normal map on medium/high, Lambert on low
-    this.grain = this.keep(grainTexture());
+    const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    this.grain = this.keep(detailTexture(this.q.name === 'low' ? 128 : 256));
+    this.grain.anisotropy = aniso;
+    this.ground = {
+      uGround: { value: null }, uGroundN: { value: null }, uPhoto: { value: 0 },
+      uMean: { value: GROUND_LAYERS.map(() => new THREE.Vector3(1, 1, 1)) }
+    };
     if (pbr) {
-      this.terrainNormal = this.keep(normalTexture(128, 9, 2.2, 3));
-      this.terrainMat = this.keep(glowPatch(new THREE.MeshStandardMaterial({ vertexColors: true, map: this.grain, normalMap: this.terrainNormal, normalScale: new THREE.Vector2(0.85, 0.85), roughness: 0.94, metalness: 0, envMapIntensity: 0.3, side: THREE.DoubleSide })));
+      const nSize = this.q.name === 'ultra' ? 256 : 128;
+      this.terrainNormal = this.keep(normalTexture(nSize, 9, 2.4, 3));
+      this.terrainNormal.anisotropy = aniso;
+      this.terrainMat = this.keep(glowPatch(new THREE.MeshStandardMaterial({ vertexColors: true, map: this.grain, normalMap: this.terrainNormal, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.92, metalness: 0.02, envMapIntensity: 0.35, side: THREE.DoubleSide }), this.ground));
     } else {
-      this.terrainMat = this.keep(glowPatch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.grain, side: THREE.DoubleSide })));
+      this.terrainMat = this.keep(glowPatch(new THREE.MeshLambertMaterial({ vertexColors: true, map: this.grain, side: THREE.DoubleSide }), this.ground));
     }
     this.propMat = this.keep(pbr
       ? new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0, envMapIntensity: 0.25 })
       : new THREE.MeshLambertMaterial({ vertexColors: true }));
 
+    this.rockMat = pbr ? this.keep(rockPatch(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, envMapIntensity: 0.25 }), this.ground)) : this.propMat;
     this._buildPropTemplates();
     this._buildStatics(session);
     this._buildPrecip();
+    this.scenery = new Scenery(this.track, this.q, scene);
+    if (pbr && env.hdr) this._loadHdr(env.hdr);
+    if (pbr) this._loadGround(aniso);
     this.setAtmosphere(session.weather, session.hour, 0);
+  }
+
+  /**
+   * Photographed ground: loads the eight colour + normal JPGs in the background, packs them into two
+   * texture arrays and switches the terrain shader over. Until then (and on Low) the ground is procedural.
+   */
+  _loadGround(aniso) {
+    const S = this.q.name === 'medium' ? 512 : 1024, SN = S / 2, N = GROUND_LAYERS.length;
+    const load = (name) => new Promise((res, rej) => new THREE.ImageLoader().load('./textures/ground/' + name + '.jpg', res, undefined, rej));
+    Promise.all(GROUND_LAYERS.flatMap((n) => [load(n + '_diff'), load(n + '_nor')])).then((imgs) => {
+      if (this.disposed) return;
+      const cv = document.createElement('canvas');
+      const g = cv.getContext('2d', { willReadFrequently: true });
+      const pack = (size, pick, srgb) => {
+        cv.width = cv.height = size;
+        const data = new Uint8Array(size * size * 4 * N);
+        for (let i = 0; i < N; i++) {
+          g.drawImage(imgs[i * 2 + pick], 0, 0, size, size);
+          const px = g.getImageData(0, 0, size, size).data, row = size * 4;
+          // canvas rows run top-down; textures are bottom-up (keeps the normal maps' green channel the right way round)
+          for (let y = 0; y < size; y++) data.set(px.subarray(y * row, y * row + row), i * size * row + (size - 1 - y) * row);
+          if (srgb) {
+            // average colour in linear light: the shader divides by it so only the layer's detail remains
+            let r = 0, gg = 0, b = 0, n = 0;
+            for (let k = 0; k < px.length; k += 4 * 37) { r += Math.pow(px[k] / 255, 2.2); gg += Math.pow(px[k + 1] / 255, 2.2); b += Math.pow(px[k + 2] / 255, 2.2); n++; }
+            this.ground.uMean.value[i].set(r / n, gg / n, b / n);
+          }
+        }
+        const t = new THREE.DataArrayTexture(data, size, size, N);
+        t.format = THREE.RGBAFormat; t.type = THREE.UnsignedByteType;
+        t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+        t.generateMipmaps = true; t.anisotropy = aniso;
+        t.needsUpdate = true;
+        return t;
+      };
+      this.groundTex = [pack(S, 0, true), pack(SN, 1, false)];
+      this.ground.uGround.value = this.groundTex[0];
+      this.ground.uGroundN.value = this.groundTex[1];
+      this.ground.uPhoto.value = 1;
+    }).catch((err) => console.warn('Ground textures not loaded, keeping the procedural ground:', err));
+  }
+
+  /**
+   * Photographic sky + image-based lighting. Loads in the background (the track starts on the
+   * procedural sky and the photo fades in), so it never delays the start of a run.
+   */
+  _loadHdr(file) {
+    new RGBELoader().load('./environments/' + file, (tex) => {
+      if (this.disposed) { tex.dispose(); return; }
+      tex.mapping = THREE.EquirectangularReflectionMapping;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.minFilter = tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      // find the photo's sun (brightest texel in the upper half) and turn the sky so it matches the game's sun
+      const { data, width, height } = tex.image;
+      const half = data instanceof Uint16Array;
+      let best = -1, bu = 0.5;
+      for (let y = Math.floor(height * 0.5); y < height; y += 4) {
+        for (let x = 0; x < width; x += 4) {
+          const k = (y * width + x) * 4;
+          const g = half ? THREE.DataUtils.fromHalfFloat(data[k + 1]) : data[k + 1];
+          if (g > best) { best = g; bu = (x + 0.5) / width; }
+        }
+      }
+      const rot = bu - (this.sunAz / (Math.PI * 2) + 0.5);
+      this.hdrTex = tex;
+      if (this.env.hdrSky !== false) this.sky.setHdr(tex, rot);
+      // lighting and reflections from the same photo
+      const pm = new THREE.PMREMGenerator(this.renderer);
+      const rt = pm.fromEquirectangular(tex);
+      pm.dispose();
+      // Only glossy materials (truck paint, chrome, glass, water) reflect the photo. Terrain and
+      // scenery keep the soft gradient environment: a photographed sun glitters on rough ground.
+      this.hdrRT = rt;
+      this.hdrRot = rot * Math.PI * 2;
+      this.hdrEnv = true;
+      for (const e of this.glossy) this._applyHdr(e);
+      this._hdrLevel();
+    }, undefined, (err) => console.warn('HDR sky not loaded, keeping the procedural sky:', err));
+  }
+
+  /** Register a glossy material that should reflect the photographic sky once it has loaded. */
+  useHdrOn(m) {
+    if (!m || !m.isMeshStandardMaterial) return;
+    const e = { m, base: m.envMapIntensity };
+    this.glossy.push(e);
+    if (this.hdrEnv) { this._applyHdr(e); this._hdrLevel(); }
+  }
+  _applyHdr(e) {
+    e.m.envMap = this.hdrRT.texture;
+    e.m.envMapRotation.y = this.hdrRot;
+    e.m.needsUpdate = true;
+  }
+  /** A material's own envMap ignores scene.environmentIntensity, so daylight and weather are applied here. */
+  _hdrLevel() {
+    if (!this.hdrEnv) return;
+    const k = this.scene.environmentIntensity * 0.75;
+    for (const e of this.glossy) e.m.envMapIntensity = e.base * k;
   }
 
   // -------------------------------------------------------------- atmosphere
   /** Apply weather + clock hour to sky, fog, lights and precipitation. Cheap; call a few times a second. */
   setAtmosphere(w, hour, dt) {
     const env = this.env, c = this.c;
+    this.weatherNow = w;
     const el = sunElevation(hour);
     const day = smoothstep(-0.1, 0.22, el);
     const low = clamp(1 - Math.abs(el) / 0.4, 0, 1) * smoothstep(-0.2, 0.02, el);
@@ -215,6 +426,7 @@ export class World {
     this.hemi.color.copy(c.top).lerp(c.hor, 0.5).lerp(this.tmpC.setRGB(1, 1, 1), 0.35);
     this.hemi.intensity = env.ambient * (0.18 + 0.95 * day) * (1 + gloom * 0.25);
     this.scene.environmentIntensity = (0.12 + 0.7 * day) * (1 - gloom * 0.3);
+    this._hdrLevel();
 
     // wet ground shines
     if (this.q.pbr) {
@@ -233,6 +445,7 @@ export class World {
       stars: (1 - day) * clamp(1 - gloom * 1.4, 0, 1), wind: w.wind,
       glow: env.silhouette === 'volcano' ? 0.55 + 0.45 * (1 - day) : 0,
       aurora: env.off === 'deepsnow' ? (1 - day) * clamp(1 - gloom * 1.5, 0, 1) : 0,
+      hdr: day * clamp(1 - gloom * 1.5, 0, 1) * (1 - low * 0.55) * (1 - w.dust) * (1 - w.ash),
       ringLight: c.light, ringMix: clamp(0.42 + gloom * 0.5 + w.dust * 0.4 + w.ash * 0.3, 0, 0.97)
     }, dt);
 
@@ -255,8 +468,8 @@ export class World {
   // ------------------------------------------------------------------ props
   _buildPropTemplates() {
     const env = this.env, cap = this.q.props, kind = env.treeKind;
-    const mk = (geo, n, colored) => {
-      const im = new THREE.InstancedMesh(this.keep(geo), this.propMat, n);
+    const mk = (geo, n, colored, mat) => {
+      const im = new THREE.InstancedMesh(this.keep(geo), mat || this.propMat, n);
       im.count = 0; im.frustumCulled = false;
       im.castShadow = !!this.q.treeShadows;
       if (colored) im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3).fill(1), 3);
@@ -310,13 +523,30 @@ export class World {
     const used = { mixed: ['pine', 'broad'], pine: ['pine'], snowpine: ['pine'], broad: ['broad'], desert: ['cactus', 'palm'], jungle: ['jungle', 'palm', 'broad'], dead: ['dead'] }[kind] || ['pine'];
     this.treeKinds = used;
     this.inst = {};
-    for (const k of used) this.inst[k] = mk(geos[k](), Math.ceil(cap / used.length) + 200);
+    this.fol = {};          // foliage meshes: share their trunk mesh's instance matrices
+    const tex = this.q.pbr ? this._treeMaterials(treeGeometries(kind, env)) : null;
+    for (const k of used) {
+      const n = Math.ceil(cap / used.length) + 200;
+      if (tex && tex[k]) {
+        this.inst[k] = mk(tex[k].trunk, n, false, this.barkMat[tex[k].bark]);
+        const fol = mk(tex[k].fol, n, false, this.leafMat);
+        fol.instanceMatrix = this.inst[k].instanceMatrix;
+        fol.customDepthMaterial = this.leafDepth;
+        if (env.trees > 0.7) fol.castShadow = false;      // a closed canopy shades everything anyway: skip thousands of shadow cards
+        this.fol[k] = fol;
+      } else this.inst[k] = mk(geos[k](), n);
+    }
+    if (tex) for (const k of ['pine', 'broad', 'jungle', 'palm']) if (!used.includes(k)) { tex[k].trunk.dispose(); tex[k].fol.dispose(); }
     // far LOD: one very cheap silhouette for trees beyond the near ring
     const farGeo = kind === 'dead' || kind === 'desert'
       ? mergeColored([{ geo: new THREE.CylinderGeometry(0.2, 0.34, 3.6, 4), matrix: M(0, 1.8, 0), color: [1, 1, 1] }])
       : mergeColored([{ geo: new THREE.CylinderGeometry(0.2, 0.3, 2.6, 3), matrix: M(0, 1.3, 0), color: [tr[0] / f1[0], tr[1] / f1[1], tr[2] / f1[2]] }, { geo: new THREE.ConeGeometry(2.0, kind === 'jungle' ? 4 : 5.6, 4), matrix: M(0, kind === 'jungle' ? 9 : 4.8, 0, kind === 'jungle' ? 1.7 : 1, 1, kind === 'jungle' ? 1.7 : 1), color: [1, 1, 1], shade: [2, 8] }]);
     if (kind === 'jungle') farGeo.attributes.position.needsUpdate = true;
-    this.inst.far = mk(farGeo, cap, true);
+    if (tex && tex.far) {
+      farGeo.dispose();
+      this.inst.far = mk(tex.far, cap, true, this.leafMat);
+      this.inst.far.castShadow = false;
+    } else this.inst.far = mk(farGeo, cap, true);
 
     const rockG = new THREE.IcosahedronGeometry(1, 1);
     const rp = rockG.attributes.position;
@@ -327,11 +557,62 @@ export class World {
     rockG.computeVertexNormals();
     const cl = env.cliff;
     this.rockGeo = this.keep(mergeColored([{ geo: rockG, color: [cl[0] * 0.95, cl[1] * 0.95, cl[2] * 0.95], shade: [-1, 1] }]));
-    this.inst.boulder = mk(this.rockGeo, Math.ceil(cap / 2));
+    this.inst.boulder = mk(this.rockGeo, Math.ceil(cap / 2), false, this.rockMat);
     const bushGeo = kind === 'jungle'
       ? mergeColored([0, 1, 2, 3, 4].map((i) => ({ geo: new THREE.ConeGeometry(0.34, 1.9, 3), matrix: new THREE.Matrix4().makeRotationY(i * 1.26).multiply(M(0, 0.7, 0.55, 1, 1, 0.3, 1.0, 0, 0)), color: i % 2 ? f1 : f2 })))
-      : mergeColored([{ geo: new THREE.IcosahedronGeometry(0.7, 0), matrix: M(0, 0.4, 0, 1, 0.7, 1), color: f2, shade: [-0.1, 0.9] }]);
-    this.inst.bush = mk(bushGeo, cap);
+      : mergeColored([
+        // a shrub is a few overlapping leaf masses on a darker core, not a single blob
+        { geo: new THREE.IcosahedronGeometry(0.55, 0), matrix: M(0, 0.42, 0, 1, 0.8, 1), color: [f1[0] * 0.8, f1[1] * 0.8, f1[2] * 0.8], shade: [0, 0.9] },
+        { geo: new THREE.IcosahedronGeometry(0.42, 0), matrix: M(0.42, 0.34, 0.14, 1, 0.8, 1, 0.4, 0.7, 0), color: f1, shade: [0, 0.7] },
+        { geo: new THREE.IcosahedronGeometry(0.38, 0), matrix: M(-0.36, 0.3, -0.22, 1, 0.75, 1, 0, 1.9, 0.3), color: [f2[0] * 0.9, f2[1] * 0.9, f2[2] * 0.9], shade: [0, 0.65] },
+        { geo: new THREE.IcosahedronGeometry(0.3, 0), matrix: M(0.05, 0.72, -0.1, 1, 0.8, 1, 0.8, 0.3, 0), color: f2, shade: [0.5, 1.0] }
+      ]);
+    if (tex && tex.bush) {
+      bushGeo.dispose();
+      this.inst.bush = mk(tex.bush, cap, false, this.leafMat);
+      this.inst.bush.customDepthMaterial = this.leafDepth;
+    } else this.inst.bush = mk(bushGeo, cap);
+  }
+
+  /** Leaf-card and bark materials. Bark photos load in the background; trunks are plain brown until then. */
+  _treeMaterials(geos) {
+    const atlas = this.keep(treeAtlas());
+    this.windU = { value: 0 };
+    this.leafMat = this.keep(new THREE.MeshStandardMaterial({ map: atlas, vertexColors: true, alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.86, metalness: 0, envMapIntensity: 0.2 }));
+    this.leafMat.onBeforeCompile = (sh) => {
+      sh.uniforms.uWindT = this.windU;
+      // leaves sway a little, more the higher up the tree; cards keep their authored normal on both faces
+      sh.vertexShader = 'uniform float uWindT;\n' + sh.vertexShader.replace('#include <begin_vertex>', [
+        '#include <begin_vertex>',
+        '  #ifdef USE_INSTANCING',
+        '    float lp = instanceMatrix[3].x * 0.31 + instanceMatrix[3].z * 0.23 + position.y * 0.5;',
+        '    float ls = (sin(uWindT * 1.3 + lp) + 0.5 * sin(uWindT * 2.9 + lp * 1.7)) * 0.012 * position.y;',
+        '    transformed.x += ls; transformed.z += ls * 0.6;',
+        '  #endif'
+      ].join('\n'));
+      sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin> normal = normalize(vNormal);');
+    };
+    this.leafDepth = this.keep(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: atlas, alphaTest: 0.42 }));
+    this.barkMat = {};
+    const loader = new THREE.TextureLoader();
+    for (const name of ['pine', 'broad', 'palm']) {
+      const m = this.keep(new THREE.MeshStandardMaterial({ vertexColors: true, color: new THREE.Color(0.3, 0.22, 0.15), roughness: 0.92, metalness: 0, envMapIntensity: 0.2 }));
+      this.barkMat[name] = m;
+      loader.load('./textures/trees/bark_' + name + '.jpg', (t) => {
+        if (this.disposed) { t.dispose(); return; }
+        t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4;
+        // divide out the photo's average brightness so the trunk keeps the region's bark colour
+        const cv = document.createElement('canvas'); cv.width = cv.height = 16;
+        const g = cv.getContext('2d'); g.drawImage(t.image, 0, 0, 16, 16);
+        const px = g.getImageData(0, 0, 16, 16).data;
+        let lum = 0; for (let k = 0; k < px.length; k += 4) lum += Math.pow((px[k] + px[k + 1] + px[k + 2]) / 765, 2.2);
+        lum = Math.max(0.03, lum / (px.length / 4));
+        m.map = this.keep(t);
+        m.color.setScalar(Math.min(2.5, 0.17 / lum));
+        m.needsUpdate = true;
+      }, undefined, () => {});
+    }
+    return geos;
   }
 
   _refreshProps(cx0, cz0) {
@@ -362,10 +643,11 @@ export class World {
             if (near) put(kinds[Math.min(kinds.length - 1, Math.floor(p.v * kinds.length * (kinds.length > 1 ? 1.35 : 1)) % kinds.length)], p, 0.9 + p.v * 0.4);
             else put('far', p, 0.9 + p.v * 0.4, p.v > 0.5 ? env.foliage : env.foliage2);
           } else if (p.type === 'boulder') put('boulder', { ...p, y: p.y + p.scale * 0.25 }, 0.75);
-          else if (near || p.v > 0.5) put('bush', p);
+          else if (p.type === 'bush' && (near || p.v > 0.5)) put('bush', p);
         }
       }
     }
+    for (const k in this.fol) this.fol[k].count = counts[k];
     for (const name in counts) {
       const im = this.inst[name];
       im.count = counts[name];
@@ -379,7 +661,7 @@ export class World {
     const tr = this.track, scene = this.scene, env = this.env;
     const rocks = tr.obstacles.filter((o) => o.type === 'rock');
     if (rocks.length) {
-      const im = new THREE.InstancedMesh(this.rockGeo, this.propMat, rocks.length);
+      const im = new THREE.InstancedMesh(this.rockGeo, this.rockMat, rocks.length);
       rocks.forEach((o, i) => {
         const y = tr.heightAt(o.x, o.z);
         this.tmpQ.setFromAxisAngle(this.up, o.rot);
@@ -406,6 +688,34 @@ export class World {
       const local = (m) => base.clone().multiply(m);
       const steel = env.silhouette === 'volcano';
       const cA = steel ? [0.3, 0.3, 0.32] : wood, cB = steel ? [0.2, 0.2, 0.22] : woodD;
+      // mountain and desert regions get masonry bridges: paved deck, kerbs (parapets when railed), arched piers
+      if (['alpine', 'crags', 'dunes', 'snowpeaks'].includes(env.silhouette)) {
+        const st = env.cliff, sA = [st[0] * 1.15, st[1] * 1.13, st[2] * 1.1], sB = [st[0] * 0.9, st[1] * 0.9, st[2] * 0.9], sC = [st[0] * 0.7, st[1] * 0.7, st[2] * 0.7];
+        const nSl = Math.max(2, Math.round(b.len / 1.4));
+        for (let i = 0; i < nSl; i++) {
+          const z = -b.len / 2 + (i + 0.5) * (b.len / nSl);
+          parts.push({ geo: new THREE.BoxGeometry(b.half * 2 + 0.3, 0.5, b.len / nSl - 0.04), matrix: local(M(0, -0.25, z)), color: i % 2 ? sA : sB });
+        }
+        const kh = b.rails ? 0.75 : 0.22;
+        for (const sx of [-1, 1]) {
+          parts.push({ geo: new THREE.BoxGeometry(0.34, kh, b.len + 0.6), matrix: local(M(sx * (b.half + 0.16), kh / 2 - 0.02, 0)), color: sB });
+          parts.push({ geo: new THREE.BoxGeometry(0.42, 0.1, b.len + 0.6), matrix: local(M(sx * (b.half + 0.16), kh + 0.03, 0)), color: sA });
+        }
+        const nPier = Math.max(1, Math.round(b.len / 11));
+        for (let i = 0; i <= nPier; i++) {
+          const u = i / nPier, z = -b.len / 2 + u * b.len;
+          const wx = b.x0 + (b.x1 - b.x0) * u, wz = b.z0 + (b.z1 - b.z0) * u;
+          const drop = (b.y0 + (b.y1 - b.y0) * u) - tr.heightAt(wx, wz) + 1.5;
+          if (drop > 2) parts.push({ geo: new THREE.BoxGeometry(b.half * 2 + 0.5, drop, 1.1), matrix: local(M(0, -0.5 - drop / 2, z)), color: sC });
+          // arch haunch under the deck between piers
+          if (i < nPier) {
+            const zl = b.len / nPier;
+            for (const k of [0.16, 0.84]) parts.push({ geo: new THREE.BoxGeometry(b.half * 2 + 0.2, 0.9, zl * 0.24), matrix: local(M(0, -0.95, z + zl * k)), color: sB });
+            parts.push({ geo: new THREE.BoxGeometry(b.half * 2 + 0.2, 0.45, zl * 0.5), matrix: local(M(0, -0.72, z + zl * 0.5)), color: sB });
+          }
+        }
+        continue;
+      }
       const nPl = Math.round(b.len / 0.6);
       for (let i = 0; i < nPl; i++) {
         const z = -b.len / 2 + (i + 0.5) * (b.len / nPl);
@@ -487,8 +797,9 @@ export class World {
     if (env.silhouette === 'canopy') wcol.setRGB(0.2, 0.3, 0.2);
     if (env.off === 'deepsnow') wcol.setRGB(0.3, 0.42, 0.5);
     this.waterMat = this.keep(this.q.pbr
-      ? new THREE.MeshStandardMaterial({ color: wcol, roughness: 0.1, metalness: 0.15, transparent: true, opacity: 0.84, depthWrite: false, normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.5, 0.5), envMapIntensity: 1.4 })
+      ? new THREE.MeshStandardMaterial({ color: wcol, roughness: 0.06, metalness: 0.35, transparent: true, opacity: 0.86, depthWrite: false, normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.65, 0.65), envMapIntensity: 2.2 })
       : new THREE.MeshLambertMaterial({ color: wcol, transparent: true, opacity: 0.78, depthWrite: false }));
+    this.useHdrOn(this.waterMat);
     for (const w of tr.water) {
       const im = Math.round((w.i0 + w.i1) / 2);
       const m = new THREE.Mesh(this.keep(new THREE.PlaneGeometry(150, w.s1 - w.s0)), this.waterMat);
@@ -543,6 +854,10 @@ export class World {
     const nor = new Float32Array((nv * nv + skirtN) * 3);
     const colr = new Float32Array((nv * nv + skirtN) * 3);
     const uv = new Float32Array((nv * nv + skirtN) * 2);
+    const wgt = new Uint8Array((nv * nv + skirtN) * 8);     // ground layer weights (8 per vertex)
+    const lw = this._lw || (this._lw = new Float32Array(8));
+    const offLayer = LAYER_OF[env.off] ?? 0;
+    const leafy = env.off === 'grass' ? Math.min(1, env.trees * 1.5) : 0;   // forest floor under the trees
     const x0 = cx * CHUNK, z0 = cz * CHUNK;
     const g1 = env.grass, g2 = env.grass2, cl = env.cliff;
     const snowy = env.off === 'deepsnow';
@@ -564,6 +879,10 @@ export class World {
         let r = g1[0] + (g2[0] - g1[0]) * nz1, g = g1[1] + (g2[1] - g1[1]) * nz1, b = g1[2] + (g2[2] - g1[2]) * nz1;
         const steep = smoothstep(snowy ? 0.42 : 0.30, snowy ? 0.62 : 0.55, 1 - ny);
         r += (cl[0] - r) * steep; g += (cl[1] - g) * steep; b += (cl[2] - b) * steep;
+        // layer weights: open ground (grass, with leaf litter in patches under trees), rock on steep faces
+        lw.fill(0);
+        if (leafy > 0) { const ff = leafy * smoothstep(0.35, 0.7, noise2(x / 13, z / 13, 57) * 0.5 + 0.5); lw[0] = 1 - ff; lw[7] = ff; } else lw[offLayer] = 1;
+        if (steep > 0) { for (let m = 0; m < 8; m++) lw[m] *= 1 - steep; lw[3] += steep; }
         const e = ch.e[q];
         let glow = 0;
         if (e < 1.6) {
@@ -571,12 +890,14 @@ export class World {
           const c = sq.surface.color;
           const t = sq.onRoad && e > 0 ? 1 : smoothstep(1.6, -0.2, e);
           r += (c[0] - r) * t; g += (c[1] - g) * t; b += (c[2] - b) * t;
+          for (let m = 0; m < 8; m++) lw[m] *= 1 - t;
+          lw[LAYER_OF[sq.surface.name] ?? 1] += t;                 // the road's own surface
           if (sq.waterY > y) { r *= 0.72; g *= 0.74; b *= 0.78; }
           if (sq.surface.hot) glow = 1;
         } else if (extra && e < 70) {
           const sq = tr.surfaceAt(x, z);
           if (sq.surface.hot) { const c = sq.surface.color; r = c[0]; g = c[1]; b = c[2]; glow = 1; }
-          else if (sq.waterY > y - 0.4) { const c = sq.surface.color; r = c[0] * 0.8; g = c[1] * 0.8; b = c[2] * 0.82; }
+          else if (sq.waterY > y - 0.4) { const c = sq.surface.color; r = c[0] * 0.8; g = c[1] * 0.8; b = c[2] * 0.82; for (let m = 0; m < 8; m++) lw[m] *= 0.25; lw[4] += 0.75; }   // pebbly banks
         }
         if (glow) {
           // crust pattern: dark plates with bright cracks
@@ -584,6 +905,7 @@ export class World {
           const k2 = cr < 0.22 ? 1.25 : 0.42;
           colr[k * 3] = r * k2; colr[k * 3 + 1] = g * k2 * (cr < 0.22 ? 1.2 : 0.6); colr[k * 3 + 2] = b * k2;
         } else { colr[k * 3] = r * nz2 * alb; colr[k * 3 + 1] = g * nz2 * alb; colr[k * 3 + 2] = b * nz2 * alb; }
+        for (let m = 0; m < 8; m++) wgt[k * 8 + m] = Math.round(Math.min(1, lw[m]) * 255);
       }
     }
     const idx = new (nv * nv + skirtN > 65535 ? Uint32Array : Uint16Array)(n * n * 6 + n * 4 * 6);
@@ -603,6 +925,7 @@ export class World {
         nor[so * 3] = nor[k * 3]; nor[so * 3 + 1] = nor[k * 3 + 1]; nor[so * 3 + 2] = nor[k * 3 + 2];
         colr[so * 3] = colr[k * 3]; colr[so * 3 + 1] = colr[k * 3 + 1]; colr[so * 3 + 2] = colr[k * 3 + 2];
         uv[so * 2] = uv[k * 2]; uv[so * 2 + 1] = uv[k * 2 + 1];
+        for (let m = 0; m < 8; m++) wgt[so * 8 + m] = wgt[k * 8 + m];
         if (i < n) {
           const a = k, b = get(i + 1), c = so, d = so + 1;
           idx[io++] = a; idx[io++] = c; idx[io++] = b;
@@ -618,6 +941,9 @@ export class World {
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colr, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    const wi = new THREE.InterleavedBuffer(wgt, 8);
+    geo.setAttribute('aW0', new THREE.InterleavedBufferAttribute(wi, 4, 0, true));
+    geo.setAttribute('aW1', new THREE.InterleavedBufferAttribute(wi, 4, 4, true));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeBoundingSphere();
     const mesh = new THREE.Mesh(geo, this.terrainMat);
@@ -675,6 +1001,7 @@ export class World {
       this.propsDirty = false; this.propTimer = 0; this.propKey = '';
     }
     this._refreshProps(ccx, ccz);
+    this.scenery.update(dt, fx, fz, camera, this.weatherNow, this.day);
 
     const cp = camera.position;
     this.sky.mesh.position.copy(cp);
@@ -700,6 +1027,7 @@ export class World {
     for (let i = 0; i < this.cacheMeshes.length; i++) this.cacheMeshes[i].children[0].rotation.y = time * 1.5;
     for (let i = 0; i < this.relicMeshes.length; i++) { this.relicMeshes[i].rotation.y = time * 2; }
     this.waterNormal.offset.set(time * 0.012, time * 0.03);
+    if (this.windU) this.windU.value = time;
     if (this.fallTex) this.fallTex.offset.y = time * 0.9;
   }
 
@@ -708,17 +1036,23 @@ export class World {
   hideRelic(i) { this.relicMeshes[i].visible = false; }
 
   dispose() {
+    this.disposed = true;
+    if (this.hdrTex) this.hdrTex.dispose();
+    if (this.hdrRT) this.hdrRT.dispose();
+    if (this.groundTex) this.groundTex.forEach((t) => t.dispose());
     for (const [, m] of this.chunkMeshes) m.mesh.geometry.dispose();
     this.chunkMeshes.clear();
     for (const d of this.disposables) d.dispose && d.dispose();
     this.scene.traverse((o) => { if (o.isInstancedMesh) o.dispose(); });
     this.sky.dispose();
+    if (this.scenery) this.scenery.dispose();
     if (this.envRT) this.envRT.dispose();
   }
 }
 
 export const QUALITY = {
-  low:    { name: 'low',    radius: 150, shadows: 0,    pixelRatio: 1.0, props: 900,  propChunks: 3, propNear: 1, particles: 500,  buildPerFrame: 1, treeShadows: false, antialias: false, pbr: false },
-  medium: { name: 'medium', radius: 200, shadows: 1024, pixelRatio: 1.5, props: 1800, propChunks: 4, propNear: 2, particles: 900,  buildPerFrame: 2, treeShadows: false, antialias: false, pbr: true },
-  high:   { name: 'high',   radius: 260, shadows: 2048, pixelRatio: 2.0, props: 3200, propChunks: 5, propNear: 3, particles: 1500, buildPerFrame: 3, treeShadows: true,  antialias: true,  pbr: true }
+  low:    { name: 'low',    radius: 150, shadows: 0,    pixelRatio: 1.0, props: 900,  propChunks: 3, propNear: 1, particles: 500,  buildPerFrame: 1, treeShadows: false, antialias: false, pbr: false, post: false },
+  medium: { name: 'medium', radius: 200, shadows: 1024, pixelRatio: 1.5, props: 1800, propChunks: 4, propNear: 2, particles: 900,  buildPerFrame: 2, treeShadows: false, antialias: false, pbr: true,  post: false },
+  high:   { name: 'high',   radius: 260, shadows: 2048, pixelRatio: 2.0, props: 3200, propChunks: 5, propNear: 3, particles: 1500, buildPerFrame: 3, treeShadows: true,  antialias: true,  pbr: true,  post: false },
+  ultra:  { name: 'ultra',  radius: 340, shadows: 4096, pixelRatio: 2.0, props: 5000, propChunks: 6, propNear: 4, particles: 2400, buildPerFrame: 4, treeShadows: true,  antialias: true,  pbr: true,  post: true }
 };

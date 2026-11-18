@@ -7,12 +7,12 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { CarModel, staticVehicle } from '../drive/render/carModel.js';
 import { buildParams } from '../drive/core/specs.js';
-import { getVehicle } from '../game/config/vehicles.js';
+import { getVehicle, paintSpec } from '../game/config/vehicles.js';
 
-export default function GaragePreview({ vehicleId, ups, gear, tire, interactive = true, locked = false }) {
+export default function GaragePreview({ vehicleId, ups, gear, tire, paint = 'stock', interactive = true, locked = false }) {
   const host = useRef(null);
   const st = useRef(null);
-  const key = `${vehicleId}|${JSON.stringify(ups)}|${JSON.stringify(gear)}|${tire}|${locked}`;
+  const key = `${vehicleId}|${JSON.stringify(ups)}|${JSON.stringify(gear)}|${tire}|${paint}|${locked}`;
 
   // renderer + scene: once per mount
   useEffect(() => {
@@ -112,7 +112,7 @@ export default function GaragePreview({ vehicleId, ups, gear, tire, interactive 
     const s = st.current;
     if (!s) return;
     if (s.car) { s.pivot.remove(s.car.group); s.car.dispose(); }
-    const spec = getVehicle(vehicleId);
+    const spec = paintSpec(getVehicle(vehicleId), paint);
     const P = buildParams(vehicleId, ups, { ...gear, tire });
     const car = new CarModel(spec, P, staticVehicle(P), { pbr: true });
     car.setLights(0.6, false);

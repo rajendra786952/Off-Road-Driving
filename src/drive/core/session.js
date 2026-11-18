@@ -20,7 +20,7 @@ const HOURS = { morning: 8, day: 13, dusk: 18.2, night: 23, overcast: 13 };
 const W_KEYS = ['grip', 'wet', 'fog', 'rain', 'snow', 'wind', 'dust', 'ash'];
 
 export class DriveSession {
-  /** opts: { difficulty, weather (override) } */
+  /** opts: { difficulty, weather (override), mission: 'standard' | 'cargo', resume: snapshot() of an earlier run } */
   constructor(track, params, opts = {}) {
     this.track = track;
     this.params = params;
@@ -61,7 +61,19 @@ export class DriveSession {
     this.burnCool = 0;
     this.offRoute = false;
     this._sd = { s: 0, d: 0 };
+    // mission: a cargo run carries a fragile load that pays a bonus for arriving intact
+    this.mission = opts.mission === 'cargo' ? 'cargo' : 'standard';
+    this.cargo = 100;
+    // wear and tear beyond the damage bar
+    this.flats = [false, false, false, false];   // punctured tyres (fixed at checkpoints, except on Hardcore)
+    this.brakeHeat = 0;                          // 0..1.2: hot brakes fade
+    this.pull = (track.seed % 2 ? 1 : -1);       // which way bent steering pulls once damage passes 50%
+    this._pz = (track.seed * 2654435761) >>> 0;  // deterministic dice for punctures
+    // ghost: progress + lateral offset every half second (saved with a new best time)
+    this.trace = { s: [], d: [] };
+    this.traceT = 0;
     this.spawn(track.startS);
+    if (opts.resume) this.restore(opts.resume);
   }
 
   /** Blend the weather plan at progress p into this.weather (the physics holds the same object). */
@@ -108,13 +120,46 @@ export class DriveSession {
     this.events.push({ type: 'recover', tow });
   }
 
+  /** Everything needed to pick the run up again from the last checkpoint (stored in the save file). */
+  snapshot() {
+    return {
+      v: 1, cpNext: this.cpNext, cpS: this.cpS, time: this.time, penalty: this.penalty, fuel: this.fuel, damage: this.damage,
+      heat: this.heat, recoveries: this.recoveries, caches: this.caches.map((c) => c.found), relics: this.relics.map((c) => c.found),
+      cacheCoins: this.cacheCoins, distance: this.distance, mission: this.mission, cargo: this.cargo, diff: this.diff.id,
+      flats: [...this.flats], trace: { s: [...this.trace.s], d: [...this.trace.d] }
+    };
+  }
+
+  restore(o) {
+    if (!o || o.v !== 1 || !(o.cpNext >= 0) || o.cpNext > this.track.checkpoints.length) return false;
+    this.cpNext = o.cpNext;
+    this.cpS = o.cpNext > 0 ? this.track.checkpoints[o.cpNext - 1].s : this.track.startS;
+    this.safeS = this.cpS; this.maxS = this.cpS;
+    this.time = +o.time || 0; this.penalty = +o.penalty || 0;
+    this.fuel = Math.min(this.params.fuelCap, Math.max(0, +o.fuel || 0));
+    this.damage = Math.min(100, Math.max(0, +o.damage || 0));
+    this.heat = Math.min(1, Math.max(0.3, +o.heat || 0.35));
+    this.recoveries = o.recoveries | 0;
+    (o.caches || []).forEach((f, i) => { if (this.caches[i]) this.caches[i].found = !!f; });
+    (o.relics || []).forEach((f, i) => { if (this.relics[i]) this.relics[i].found = !!f; });
+    this.cacheCoins = +o.cacheCoins || 0; this.distance = +o.distance || 0;
+    this.cargo = Math.min(100, Math.max(0, o.cargo ?? 100));
+    this.flats = [0, 1, 2, 3].map((i) => !!(o.flats && o.flats[i]));
+    if (o.trace && Array.isArray(o.trace.s)) this.trace = { s: [...o.trace.s], d: [...(o.trace.d || [])] };
+    this.spawn(this.cpS);
+    this.flats.forEach((f, i) => { this.vehicle.wheels[i].flat = f; });
+    this.resumed = true;
+    return true;
+  }
+
   get totalTime() { return this.time + this.penalty; }
   get remaining() { return Math.max(0, this.track.finishS - this.s); }
   get progress() { return Math.min(1, Math.max(0, this.s / this.track.finishS)); }
 
   /** Advance by frame time dt with the given driver input. */
   update(dt, input) {
-    if (this.finished) { input = { gas: 0, brake: 1, steer: 0 }; }
+    // after the finish: brake to a stop, then hold on the handbrake (the brake pedal reverses once stopped)
+    if (this.finished) { input = { gas: 0, brake: this.vehicle.speed > 0.6 ? 1 : 0, steer: 0, hand: true }; }
     this.acc += Math.min(dt, 0.1);
     let steps = 0;
     const veh = this.vehicle;
@@ -124,6 +169,11 @@ export class DriveSession {
     if (this.damage >= 100) limp = 0.55;
     if (this.overheated) limp = Math.min(limp, 0.35);
     if (limp < 1) input = { ...input, gas: (input.gas || 0) * limp };
+    // bent steering pulls to one side once the truck is badly damaged
+    if (this.damage > 50 && !this.finished) input = { ...input, steer: Math.max(-1, Math.min(1, (input.steer || 0) + this.pull * 0.16 * (this.damage - 50) / 50)) };
+    // hot brakes fade (the brake pedal only brakes while rolling forward; stopped, it selects reverse)
+    const braking = veh.speed > 0.6 && (input.brake || 0) > 0.05;
+    if (braking && this.brakeHeat > 0.75) input = { ...input, brake: input.brake * (1 - 0.55 * Math.min(1, (this.brakeHeat - 0.75) / 0.25)) };
     while (this.acc >= PHYS_DT && steps < 6) {
       veh.step(PHYS_DT, input);
       this.acc -= PHYS_DT;
@@ -133,17 +183,25 @@ export class DriveSession {
         const dmg = (veh.impact - 3.2) * 3.5 * diff.damage;
         this.damage = Math.min(100, this.damage + dmg);
         this.events.push({ type: 'impact', v: veh.impact, dmg });
+        if (this.mission === 'cargo') this.cargo = Math.max(0, this.cargo - (veh.impact - 3.2) * 4);
+        if (veh.impact > 6) this._puncture();
       } else if (veh.impact > 1.3) this.events.push({ type: 'scrape', v: veh.impact });
       this.hitCool -= PHYS_DT;
       if (veh.wheelHit > 1.2 && this.hitCool <= 0) {
         this.hitCool = 0.35;
         this.events.push({ type: 'thump', v: veh.wheelHit });
         if (veh.wheelHit > 2.5) this.damage = Math.min(100, this.damage + (veh.wheelHit - 2.5) * 0.8 * diff.damage);
+        if (this.mission === 'cargo' && veh.wheelHit > 2.2) this.cargo = Math.max(0, this.cargo - (veh.wheelHit - 2.2) * 1.5);
+        if (veh.wheelHit > 3.6) this._puncture();
       }
     }
     if (steps === 6) this.acc = 0;
     const st = steps * PHYS_DT;
     if (!this.finished) this.time += st;
+    // brakes heat with hard use at speed and cool in the airflow
+    this.brakeHeat = Math.min(1.2, Math.max(0, this.brakeHeat + ((braking ? (input.brake || 0) * Math.abs(veh.speed) * 0.035 : 0) - 0.03) * st));
+    // cargo slides about when the truck is on its side
+    if (this.mission === 'cargo' && veh.upY < 0.75) this.cargo = Math.max(0, this.cargo - (veh.upY < 0.35 ? 40 : 10) * st);
     if (veh.broken) { veh.broken = false; this.recover(); return; }
 
     const tr = this.track;
@@ -152,6 +210,8 @@ export class DriveSession {
     tr.mainSD(this.mainIdx, p[0], p[2], this._sd);
     this.s = this._sd.s; this.d = this._sd.d;
     this.distance += Math.abs(veh.speed) * st;
+    this.traceT += st;
+    if (this.traceT >= 0.5 && !this.finished && this.trace.s.length < 6000) { this.traceT -= 0.5; this.trace.s.push(Math.round(this.s)); this.trace.d.push(Math.round(this.d * 10)); }
     const hw = tr.HW[this.mainIdx];
     this.offRoute = Math.abs(this.d) > hw + 25;
 
@@ -164,7 +224,8 @@ export class DriveSession {
     const hot = tr.env.hot || 0;
     if (hot > 0) {
       const load = Math.abs(veh.throttle) * (veh.low ? 1.15 : 1);
-      const dT = (load * 0.021 * hot - 0.0075 - Math.abs(veh.speed) * 0.0026) * st;
+      // low range now tops out near 9 m/s, so airflow cooling is scaled to match
+      const dT = (load * 0.021 * hot - 0.0075 - Math.abs(veh.speed) * 0.0011) * st;
       this.heat = Math.min(1, Math.max(0.3, this.heat + dT));
       if (!this.overheated && this.heat >= 1) { this.overheated = true; this.events.push({ type: 'overheat' }); }
       else if (this.overheated && this.heat < 0.72) { this.overheated = false; this.events.push({ type: 'cooled' }); }
@@ -193,7 +254,11 @@ export class DriveSession {
       this.safeS = Math.max(this.safeS, cp.s);
       const before = this.fuel;
       this.fuel = Math.min(this.params.fuelCap, this.fuel + this.params.fuelCap * 0.18);
-      if (diff.id !== 'hardcore') this.damage = Math.max(0, this.damage - 20);
+      if (diff.id !== 'hardcore') {
+        this.damage = Math.max(0, this.damage - 20);
+        this.flats.fill(false); for (const w of veh.wheels) w.flat = false;     // checkpoint crews change tyres
+      }
+      this.brakeHeat = Math.min(this.brakeHeat, 0.3);
       this.heat = Math.min(this.heat, 0.6);
       this.events.push({ type: 'checkpoint', index: this.cpNext, total: tr.checkpoints.length, name: cp.name, fuel: this.fuel - before });
     }
@@ -231,6 +296,17 @@ export class DriveSession {
     // stuck detector (HUD hint + bot)
     if (Math.abs(veh.speed) < 0.35 && (input.gas > 0.3 || input.brake > 0.3) && !this.finished) this.stuckTime += st;
     else this.stuckTime = Math.max(0, this.stuckTime - st * 2);
+  }
+
+  /** A heavy hit may puncture a tyre (roughly one hit in three). */
+  _puncture() {
+    this._pz = (Math.imul(this._pz, 1103515245) + 12345) >>> 0;
+    if (this._pz / 4294967296 > 0.35) return;
+    const i = (this._pz >>> 8) % 4;
+    if (this.flats[i]) return;
+    this.flats[i] = true;
+    this.vehicle.wheels[i].flat = true;
+    this.events.push({ type: 'puncture', wheel: i });
   }
 
   /** Drain queued events. */

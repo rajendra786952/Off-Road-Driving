@@ -20,17 +20,17 @@ export const VEHICLES = [
   },
   {
     id: 'desert-pickup',
-    name: 'Desert Pickup',
+    name: 'Desert Raptor 4x4',
     price: 1800,
-    desc: 'Heavy and powerful. Climbs steep hills with ease, burns more fuel.',
+    desc: 'Heavy 4x4 super-truck with V8 power, wide track, and incredible off-road torque.',
     type: 'pickup',
     colors: { main: 0xd9812b, dark: 0x6b3d12, accent: 0xf4e3b0, glass: 0xa9dcf0 },
     body: { w: 128, h: 32, density: 0.0026 },
     wheel: { r: 21, base: 44, density: 0.0010 },
     suspension: { rest: 21, spread: 11, stiffness: 0.36, damping: 0.17 },
     head: { x: 4, lift: 12, r: 8 },
-    power: { accel: 0.0280, maxWheelSpeed: 0.40, reaction: 0.00085, driveForce: 0.0125 },
-    grip: 1.55,
+    power: { accel: 0.0300, maxWheelSpeed: 0.42, reaction: 0.00085, driveForce: 0.0135 },
+    grip: 1.60,
     fuelUse: 1.2
   },
   {
@@ -47,8 +47,41 @@ export const VEHICLES = [
     power: { accel: 0.0340, maxWheelSpeed: 0.48, reaction: 0.00110, driveForce: 0.0080 },
     grip: 1.45,
     fuelUse: 0.95
+  },
+  {
+    id: 'monster-truck',
+    name: 'Bigfoot Monster Truck',
+    price: 4500,
+    desc: 'Giant high-clearance Bigfoot monster truck with massive terrain-crushing power.',
+    type: 'monster',
+    colors: { main: 0x1d4ed8, dark: 0x0f172a, accent: 0xfacc15, glass: 0x38bdf8 },
+    body: { w: 140, h: 36, density: 0.0030 },
+    wheel: { r: 28, base: 48, density: 0.0014 },
+    suspension: { rest: 26, spread: 14, stiffness: 0.42, damping: 0.22 },
+    head: { x: 5, lift: 16, r: 10 },
+    power: { accel: 0.0360, maxWheelSpeed: 0.44, reaction: 0.00095, driveForce: 0.0175 },
+    grip: 1.75,
+    fuelUse: 1.35
   }
 ];
+
+/** Paint jobs (cosmetic only): a late-game coin sink. `stock` keeps each vehicle's own colours. */
+export const PAINTS = [
+  { id: 'stock', name: 'Factory', price: 0 },
+  { id: 'sand', name: 'Desert Sand', price: 1500, main: 0xc9a66b, dark: 0x6e5630 },
+  { id: 'arctic', name: 'Arctic White', price: 2500, main: 0xe8ecef, dark: 0x7c8790 },
+  { id: 'midnight', name: 'Midnight Blue', price: 4000, main: 0x1c2f5e, dark: 0x0c1430 },
+  { id: 'crimson', name: 'Crimson', price: 6000, main: 0xa3161c, dark: 0x3d0a0c },
+  { id: 'stealth', name: 'Stealth Black', price: 9000, main: 0x1a1b1e, dark: 0x08080a },
+  { id: 'gold', name: 'Champion Gold', price: 20000, main: 0xd4a017, dark: 0x6b4f08 }
+];
+
+/** The vehicle spec with a paint job applied. */
+export function paintSpec(spec, paintId) {
+  const p = PAINTS.find((x) => x.id === paintId);
+  if (!p || p.main === undefined) return spec;
+  return { ...spec, colors: { ...spec.colors, main: p.main, dark: p.dark } };
+}
 
 export function getVehicle(id) {
   return VEHICLES.find((v) => v.id === id) || VEHICLES[0];

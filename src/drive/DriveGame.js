@@ -2,6 +2,10 @@
 // audio and the results flow. Lives in its own DOM overlay + WebGL canvas, so it
 // never shares a GL context with Phaser (which is put to sleep while this runs).
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { World, QUALITY } from './render/world.js';
 import { CarModel } from './render/carModel.js';
 import { Hud } from './hud.js';
@@ -12,12 +16,14 @@ import { buildParams } from './core/specs.js';
 import { TIRES } from './core/surfaces.js';
 import { BotDriver } from './core/bot.js';
 
-const CAMS = ['chase', 'far', 'hood', 'cockpit'];
+const CAMS = ['chase', 'far', 'hood', 'cockpit', 'cinematic'];
 const lerpAngle = (a, b, t) => { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * t; };
 
 export class DriveGame {
   /**
    * opts: { parent, def (track def), vehicle (VEHICLES entry), ups, gear, settings, audioCtx,
+   *         mission ('standard' | 'cargo'), resume (session snapshot), ghost ({ s, d } best-run trace),
+   *         onCheckpoint(snapshot), coach (false for test drives),
    *         onFinish(session, score) -> reward summary, onExit(action), hasNext }
    */
   constructor(opts) {
@@ -45,12 +51,13 @@ export class DriveGame {
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.3, 1400);
 
     this.params = buildParams(opts.vehicle.id, opts.ups, opts.gear);
-    this.hud = new Hud(this.root, { difflock: this.params.difflock, winch: this.params.winch, hot: opts.def.region === 'desert' || opts.def.region === 'volcano' });
+    this.hud = new Hud(this.root, { difflock: this.params.difflock, winch: this.params.winch, hot: ['desert', 'volcano'].includes(opts.def.env || opts.def.region), cargo: opts.mission === 'cargo', steerMode: opts.settings.steerMode });
     this.hud.loading(`Loading ${opts.def.name}...`, 0.05);
 
     this.onResize = () => {
       const w = this.root.clientWidth || window.innerWidth, h = this.root.clientHeight || window.innerHeight;
       this.renderer.setSize(w, h, false);
+      if (this.composer) this.composer.setSize(w, h);
       this.camera.aspect = w / h;
       this.camera.fov = w / h < 1.5 ? 70 : 62;
       this.camera.updateProjectionMatrix();
@@ -85,19 +92,56 @@ export class DriveGame {
     if (this.disposed) return;
     const o = this.opts;
     this.track = o.def.build();
-    this.session = new DriveSession(this.track, this.params, { difficulty: o.difficulty });
+    this.session = new DriveSession(this.track, this.params, { difficulty: o.difficulty, mission: o.mission, resume: o.resume });
     this.weather = this.session.weather;
     this.world = new World(this.track, this.q, this.renderer);
     this.world.init(this.session);
     this.atmoT = 0;
     this.car = new CarModel(o.vehicle, this.params, this.session.vehicle, { pbr: this.q.pbr });
     this.world.scene.add(this.car.group);
+    for (const m of this.car.mats) this.world.useHdrOn(m);     // paint, chrome and glass reflect the HDR sky
+    // ghost of the player's best run on this track
+    this.ghost = null;
+    if (o.ghost && Array.isArray(o.ghost.s) && o.ghost.s.length > 6) {
+      const b = this.params.body;
+      const gm = new THREE.MeshBasicMaterial({ color: 0x9fe0ff, transparent: true, opacity: 0.3, depthWrite: false });
+      const g = new THREE.Group();
+      const hull = new THREE.Mesh(new THREE.BoxGeometry(b.w, b.h * 0.55, b.l), gm); hull.position.y = b.h * 0.3;
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(b.w * 0.88, b.h * 0.45, b.l * 0.45), gm); cab.position.set(0, b.h * 0.8, -b.l * 0.08);
+      g.add(hull, cab);
+      g.visible = false;
+      this.world.scene.add(g);
+      this.ghost = { mesh: g, mat: gm, s: o.ghost.s, d: o.ghost.d || [] };
+    }
+    // look-around: drag anywhere on the view (springs back), or Q / E, or the right stick
+    this.lookYaw = 0; this.dragYaw = 0; this.dragging = false;
+    this.canvas.style.pointerEvents = 'auto';
+    this.canvas.addEventListener('pointerdown', (e) => { this.dragging = true; this.dragX = e.clientX; this.canvas.setPointerCapture && this.canvas.setPointerCapture(e.pointerId); });
+    this.canvas.addEventListener('pointermove', (e) => { if (!this.dragging) return; this.dragYaw = Math.max(-2.6, Math.min(2.6, this.dragYaw - (e.clientX - this.dragX) * 0.007)); this.dragX = e.clientX; });
+    const endDrag = () => { this.dragging = false; };
+    this.canvas.addEventListener('pointerup', endDrag); this.canvas.addEventListener('pointercancel', endDrag);
+    // first-run coach + one-off tips
+    this.coach = o.coach !== false && !o.settings.tutorialDone ? { step: 0, t: 0, seen: {} } : null;
+    this.tips = { stall: 0, spin: 0, shown: {} };
     // headlights: always fitted, brightness follows darkness and fog
     this.lamp = new THREE.SpotLight(0xfff2cc, 0, 85, 0.55, 0.55, 1.5);
     this.lamp.position.copy(this.car.lampPos);
     this.lamp.target.position.set(0, this.car.lampPos.y - 1.4, 16);
     this.car.group.add(this.lamp, this.lamp.target);
     this._buildFx();
+    if (this.q.post) {
+      try {
+        const w = this.root.clientWidth || window.innerWidth, h = this.root.clientHeight || window.innerHeight;
+        this.composer = new EffectComposer(this.renderer);
+        this.composer.addPass(new RenderPass(this.world.scene, this.camera));
+        const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.32, 0.42, 0.88);
+        this.composer.addPass(bloom);
+        this.composer.addPass(new OutputPass());
+      } catch (e) {
+        console.warn('Post-processing init fallback:', e);
+        this.composer = null;
+      }
+    }
     this.audio = new DriveAudio(o.audioCtx, o.settings.sound !== false);
     this.hud.initMap(this.track);
     this.hud.on('pause', () => (this.state === 'run' ? this.pause() : this.state === 'paused' ? this.resume() : 0));
@@ -233,6 +277,13 @@ export class DriveGame {
     }
     if (dirty) this.trails.geometry.attributes.position.needsUpdate = true;
 
+    // Mud and dirt accumulation on car body (washed off when wading through water)
+    const moving = Math.hypot(veh.v[0], veh.v[2]) > 0.8;
+    const offRoad = veh.wheels.some((w) => w.grounded && (w.surface.sink >= 0.015 || Math.abs(w.slip) > 0.8));
+    if (this.car && this.car.updateDirt) {
+      this.car.updateDirt(moving && offRoad ? dt : 0, veh.waterDepth > 0.15);
+    }
+
     // winch
     const a = veh.winchAnchor;
     this.anchorRing.visible = !!a && this.params.winch;
@@ -270,8 +321,22 @@ export class DriveGame {
       const dist = mode === 'far' ? 12.5 : 7.4, height = mode === 'far' ? 5.6 : 2.9;
       const pitch = Math.max(-0.45, Math.min(0.45, veh.pitch));
       // on climbs the camera drops and looks up the hill, on descents it rises
-      const tx = p[0] - Math.sin(this.camYaw) * dist, tz = p[2] - Math.cos(this.camYaw) * dist;
+      // look-around offset eases toward the held keys / stick / drag, and the drag springs back while driving
+      if (!this.dragging) this.dragYaw *= Math.exp(-dt * (Math.abs(veh.speed) > 1.5 ? 2.2 : 0.5));
+      const lookT = this.hud.look() * 1.9 + this.dragYaw;
+      this.lookYaw = dt >= 1 ? lookT : this.lookYaw + (lookT - this.lookYaw) * (1 - Math.exp(-dt * 8));
+      const yaw = this.camYaw + this.lookYaw;
+      const tx = p[0] - Math.sin(yaw) * dist, tz = p[2] - Math.cos(yaw) * dist;
       let ty = p[1] + height - Math.sin(pitch) * dist * 0.75;
+      // keep a clear line of sight: if a bank or cliff rises between the truck and the camera, lift the camera over it
+      let lift = 0;
+      for (let k = 1; k <= 5; k++) {
+        const f = k / 5.5;
+        const gy = tr.groundAt(p[0] + (tx - p[0]) * f, p[2] + (tz - p[2]) * f, 1e9) + 0.6;
+        const ly = p[1] + 1.1 + (ty - p[1] - 1.1) * f;
+        if (gy > ly) lift = Math.max(lift, (gy - ly) / f);
+      }
+      ty += Math.min(lift, 9);
       const ground = tr.groundAt(tx, tz, 1e9) + 1.1;
       if (ty < ground) ty = ground;
       const k = 1 - Math.exp(-dt * 7);
@@ -285,6 +350,24 @@ export class DriveGame {
       this.v3.set(p[0] + veh.R[2] * 3.5, p[1] + 1.0 + veh.R[5] * 3.5, p[2] + veh.R[8] * 3.5);
       this.camLook.lerp(this.v3, dt >= 1 ? 1 : 1 - Math.exp(-dt * 9));
       cam.lookAt(this.camLook);
+    } else if (mode === 'cinematic') {
+      this.cineAngle = (this.cineAngle ?? veh.heading) + dt * 0.28;
+      const dist = 8.2;
+      const height = 2.4 + Math.sin(this.cineAngle * 0.4) * 0.7;
+      const tx = p[0] - Math.sin(this.cineAngle) * dist;
+      const tz = p[2] - Math.cos(this.cineAngle) * dist;
+      let ty = p[1] + height;
+      const ground = tr.groundAt(tx, tz, 1e9) + 1.0;
+      if (ty < ground) ty = ground;
+      const k = 1 - Math.exp(-dt * 5);
+      this.camPos.x += (tx - this.camPos.x) * k;
+      this.camPos.z += (tz - this.camPos.z) * k;
+      this.camPos.y += (ty - this.camPos.y) * k;
+      if (dt >= 1) this.camPos.set(tx, ty, tz);
+      cam.position.copy(this.camPos);
+      this.v3.set(p[0] + veh.R[2] * 1.5, p[1] + 0.9 + veh.R[5] * 1.5, p[2] + veh.R[8] * 1.5);
+      this.camLook.lerp(this.v3, dt >= 1 ? 1 : 1 - Math.exp(-dt * 7));
+      cam.lookAt(this.camLook);
     } else {
       const eye = mode === 'hood' ? this.car.hoodEye : this.car.eye;
       this.q4.set(veh.q[0], veh.q[1], veh.q[2], veh.q[3]);
@@ -296,6 +379,15 @@ export class DriveGame {
       cam.quaternion.copy(this.camQ);
       this.camPos.copy(cam.position);
       this.camYaw = veh.heading;
+    }
+
+    // Dynamic Speed-based FOV
+    const baseFov = (this.root.clientWidth || window.innerWidth) / (this.root.clientHeight || window.innerHeight) < 1.5 ? 70 : 62;
+    const speedRatio = Math.min(1, Math.abs(veh.speed) / 22);
+    const targetFov = baseFov + speedRatio * 11;
+    if (Math.abs(cam.fov - targetFov) > 0.1) {
+      cam.fov += (targetFov - cam.fov) * (1 - Math.exp(-dt * 3.5));
+      cam.updateProjectionMatrix();
     }
   }
 
@@ -317,9 +409,11 @@ export class DriveGame {
         this.state = 'run';
         this.loadMs = Math.round(performance.now() - this.t0);
         this.audio.start();
-        this.hud.toast(`${this.opts.def.name}  -  ${this.weather.name}`, 3500);
+        this.hud.toast(ss.resumed ? `Resumed at checkpoint ${ss.cpNext}/${this.track.checkpoints.length}` : `${this.opts.def.name}  -  ${this.weather.name}${this.ghost ? '  -  your ghost is racing you' : ''}`, 3500);
+        if (ss.resumed) this._camera(1);
       }
-      this.renderer.render(this.world.scene, this.camera);
+      if (this.composer) this.composer.render();
+      else this.renderer.render(this.world.scene, this.camera);
       return;
     }
 
@@ -333,6 +427,8 @@ export class DriveGame {
       if (!inp.steerRaw) inp.steer = this.steer;
       if (inp.winch && this.params.winch && veh.winchAnchor && Math.floor(this.time * 6) !== Math.floor((this.time - dt) * 6)) this.audio.winch();
       ss.update(dt, inp);
+      if (this.state === 'run') { this._coach(dt, inp, veh); this._tips(dt, inp, veh); }
+      this._ghost(ss);
       this._events(ss.takeEvents());
       if (this.state === 'run') {
         const notes = this.track.notes;
@@ -345,7 +441,8 @@ export class DriveGame {
       this.audio.update({
         rpm01: veh.rpm01, throttle: Math.abs(veh.throttle), speed: veh.speed, slip: slipMax,
         surface: veh.wheels[2].surface, water: veh.waterDepth, grounded: veh.wheels.some((w) => w.grounded),
-        strain: Math.abs(veh.throttle) * Math.max(0, 1 - Math.abs(veh.speed) / 4), weather: this.weather
+        strain: Math.abs(veh.throttle) * Math.max(0, 1 - Math.abs(veh.speed) / 4), weather: this.weather,
+        env: this.track.env.silhouette, day: this.world.day, dt
       });
     }
 
@@ -362,7 +459,8 @@ export class DriveGame {
       this.car.setLights(dark, veh.speed > 0.5 && this.hud.read().brake > 0.1);
     }
     this.hud.update(ss, { weather: `${this.weather.name} &middot; ${fmtClock(ss.hour)}` + (this.opts.settings.showFps ? `<br>${Math.round(this.fps)} fps` : '') });
-    this.renderer.render(this.world.scene, this.camera);
+    if (this.composer) this.composer.render();
+    else this.renderer.render(this.world.scene, this.camera);
 
     // dynamic resolution keeps the frame rate stable on slow phones
     this.fpsAcc += dt; this.fpsN++;
@@ -393,7 +491,8 @@ export class DriveGame {
       if (e.type === 'impact') { this.audio.crash(e.v); this.shake = Math.min(0.5, 0.12 + e.v * 0.04); if (this.opts.vibrate) this.opts.vibrate(80); }
       else if (e.type === 'scrape') this.audio.scrape(e.v);
       else if (e.type === 'thump') { this.audio.thump(e.v); this.shake = Math.max(this.shake, Math.min(0.2, e.v * 0.03)); }
-      else if (e.type === 'checkpoint') { this.audio.checkpoint(); this.hud.toast(`CHECKPOINT ${e.index}/${e.total}${e.name ? ' - ' + e.name : ''}   +fuel, repairs`); }
+      else if (e.type === 'checkpoint') { this.audio.checkpoint(); this.hud.toast(`CHECKPOINT ${e.index}/${e.total}${e.name ? ' - ' + e.name : ''}   +fuel, repairs  -  progress saved`); if (this.opts.onCheckpoint) this.opts.onCheckpoint(this.session.snapshot()); }
+      else if (e.type === 'puncture') { this.audio.crash(4); this.hud.toast(`PUNCTURE - ${['front left', 'front right', 'rear left', 'rear right'][e.wheel]} tyre`, 4200); if (this.opts.vibrate) this.opts.vibrate(120); }
       else if (e.type === 'cache') { this.audio.cache(); this.hud.toast(`${e.name} found!  +${e.reward} coins`); this.world.hideCache(e.index); }
       else if (e.type === 'relic') { this.audio.cache(); this.hud.toast(`Hidden relic found!  ${e.found}/${e.total}`); this.world.hideRelic(e.index); }
       else if (e.type === 'weather') this.hud.toast(`Weather: ${e.name}`, 2600);
@@ -403,6 +502,56 @@ export class DriveGame {
       else if (e.type === 'recover') { this._camera(1); this.steer = 0; }
       else if (e.type === 'finish') this._finish();
     }
+  }
+
+  /** Move the ghost car along the best run's recorded line. */
+  _ghost(ss) {
+    const g = this.ghost;
+    if (!g) return;
+    const gi = ss.time / 0.5, i0 = Math.floor(gi), n = g.s.length;
+    if (i0 >= n - 1 || ss.finished) { g.mesh.visible = false; return; }
+    const f = gi - i0;
+    const gs = g.s[i0] + (g.s[i0 + 1] - g.s[i0]) * f, gd = ((g.d[i0] || 0) + ((g.d[i0 + 1] || 0) - (g.d[i0] || 0)) * f) / 10;
+    const pose = this.track.roadPose(gs, gd);
+    g.mesh.position.set(pose.x, pose.y + this.params.clearance, pose.z);
+    g.mesh.rotation.y = pose.heading;
+    const p = ss.vehicle.p, dist = Math.hypot(pose.x - p[0], pose.z - p[2]);
+    g.mesh.visible = dist > 4;
+    g.mat.opacity = Math.min(0.34, 0.08 + dist * 0.02);
+  }
+
+  /** First-run coach: one prompt at a time, each cleared by doing the thing. */
+  _coach(dt, inp, veh) {
+    const c = this.coach;
+    if (!c) return;
+    const mode = this.hud.pad.active ? 'pad' : this.hud.touch ? 'touch' : 'keys';
+    const how = (touch, keys, pad) => (mode === 'pad' ? pad : mode === 'touch' ? touch : keys);
+    const STEPS = [
+      { t: 'Steer left, then right', s: how('Use the steering control on the left', 'Arrow keys or A / D', 'Left stick'), done: () => { if (inp.steer > 0.5) c.seen.l = 1; if (inp.steer < -0.5) c.seen.r = 1; return c.seen.l && c.seen.r; } },
+      { t: 'Press GAS and get rolling', s: how('The tall pedal on the right - slide up for more throttle', 'Up arrow or W', 'Right trigger'), done: () => veh.speed > 3.5 },
+      { t: 'BRAKE to a stop', s: how('BRAKE / REV pedal. Held at a standstill it reverses', 'Down arrow or S. Held at a standstill it reverses', 'Left trigger. Held at a standstill it reverses'), done: () => { if (veh.speed > 2) c.seen.m = 1; return c.seen.m && Math.abs(veh.speed) < 0.4 && inp.brake > 0.3; } },
+      { t: 'Switch to 4L LOW range', s: 'Low range is slow but pulls hard: use it for steep climbs and to hold the truck back downhill. ' + how('Tap 4L LOW', 'Press L', 'Press X'), done: () => veh.low },
+      { t: 'Back to high range', s: how('Tap 4L LOW again', 'Press L again', 'Press X again'), done: () => !veh.low },
+      { t: 'Change the camera', s: how('Tap CAM. Drag the view to look around', 'Press C. Q / E or drag to look around', 'Right bumper. Right stick looks around'), done: () => { if (c.cam === undefined) c.cam = this.camMode; return this.camMode !== c.cam; } },
+      { t: 'Stuck or on your roof? RECOVER', s: 'It puts you back on the trail for a time penalty. ' + how('RECOVER is top left', 'Press R', 'Left bumper'), wait: 7 },
+      { t: 'Diff locks and a winch are in the garage', s: 'Diff locks stop a spinning wheel stealing the drive. The winch pulls you out using trees and posts. Checkpoints save your run.', wait: 8 }
+    ];
+    const st = STEPS[c.step];
+    if (!st) { this.hud.coach(null); this.coach = null; this.opts.settings.tutorialDone = true; if (this.opts.onSettings) this.opts.onSettings(); this.hud.toast('You are set. Good luck out there.', 3000); return; }
+    c.t += dt;
+    this.hud.coach(`${c.step + 1}/${STEPS.length}  ${st.t}`, st.s);
+    if (st.wait ? c.t > st.wait : (st.done() && c.t > 0.8)) { c.step++; c.t = 0; this.audio.click(); }
+  }
+
+  /** Context tips, each shown once per run. */
+  _tips(dt, inp, veh) {
+    if (this.coach) return;
+    const t = this.tips;
+    const slip = Math.max(Math.abs(veh.wheels[0].slip), Math.abs(veh.wheels[1].slip), Math.abs(veh.wheels[2].slip), Math.abs(veh.wheels[3].slip));
+    t.stall = Math.abs(veh.speed) < 0.9 && inp.gas > 0.7 && !veh.low && veh.pitch > 0.17 ? t.stall + dt : 0;
+    t.spin = Math.abs(veh.speed) < 1.5 && inp.gas > 0.5 && slip > 5 && !veh.lock ? t.spin + dt : 0;
+    if (t.stall > 2 && !t.shown.stall) { t.shown.stall = 1; this.hud.toast('Too steep for high range - switch to 4L LOW', 5200); }
+    else if (t.spin > 2.5 && !t.shown.spin) { t.shown.spin = 1; this.hud.toast(this.params.difflock ? 'Wheels spinning - engage DIFF LOCK' : 'Wheels spinning - ease off. Diff locks (garage) stop this', 5200); }
   }
 
   recover() {
@@ -446,7 +595,7 @@ export class DriveGame {
     const body =
       `<p>${this.opts.def.name} &middot; ${this.weather.name} &middot; ${ss.diff.name}</p>` +
       `<p style="font-size:2.1vh;color:#9fb3c0">Time ${fmtTime(ss.totalTime)} &middot; Checkpoint ${ss.cpNext}/${this.track.checkpoints.length} &middot; Tyres: ${tire}</p>` +
-      `<p style="font-size:2vh;color:#9fb3c0">Keys: arrows/WASD drive &middot; Space handbrake &middot; L low range &middot; X diff lock &middot; E winch &middot; R recover &middot; C camera</p>`;
+      `<p style="font-size:2vh;color:#9fb3c0">Keys: arrows/WASD drive &middot; Space handbrake &middot; L low range &middot; X diff lock &middot; F winch &middot; R recover &middot; C camera &middot; Q/E or drag to look &middot; gamepad supported</p>`;
     const sensLabel = () => `STEERING: ${(s.steerSens || 1) <= 0.75 ? 'SLOW' : (s.steerSens || 1) >= 1.35 ? 'FAST' : 'NORMAL'}`;
     const draw = () => this.hud.panel('PAUSED', body, [
       { label: 'RESUME', cls: 'go', fn: () => this.resume() },
@@ -495,10 +644,12 @@ export class DriveGame {
       this.world.dispose();
       this.car.dispose();
       for (const o of [this.particles, this.trails, this.winchLine, this.anchorRing]) { o.geometry.dispose(); o.material.dispose(); }
+      if (this.ghost) { this.ghost.mesh.children.forEach((m) => m.geometry.dispose()); this.ghost.mat.dispose(); }
       this.pTex.dispose();
       this.track.chunks.clear();
       this.track._lastKey = -1;
     }
+    if (this.composer) this.composer.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss && this.renderer.forceContextLoss();
     this.root.remove();

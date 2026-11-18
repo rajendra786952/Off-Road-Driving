@@ -7,19 +7,25 @@ export const DRIVE_SPECS = {
     mass: 1650, wheelbase: 2.45, track: 1.56, wheelR: 0.40, comH: 0.80, clearance: 0.27,
     body: { w: 1.72, l: 3.9, h: 1.05 },
     travel: 0.27, freq: 1.55, damp: 0.38,
-    power: 52000, fmax: 0.20, vmax: 17, brake: 1.0, fuel: 60
+    power: 95000, fmax: 0.34, vmax: 28, brake: 1.1, fuel: 60
   },
   'desert-pickup': {
-    mass: 2150, wheelbase: 3.10, track: 1.70, wheelR: 0.43, comH: 0.86, clearance: 0.29,
-    body: { w: 1.90, l: 5.0, h: 1.10 },
-    travel: 0.26, freq: 1.5, damp: 0.40,
-    power: 74000, fmax: 0.225, vmax: 18.5, brake: 0.95, fuel: 80
+    mass: 2350, wheelbase: 3.63, track: 1.84, wheelR: 0.43, comH: 0.86, clearance: 0.32,
+    body: { w: 2.10, l: 5.8, h: 1.20 },
+    travel: 0.30, freq: 1.5, damp: 0.40,
+    power: 165000, fmax: 0.38, vmax: 34, brake: 1.15, fuel: 90
   },
   'rally-buggy': {
     mass: 1080, wheelbase: 2.55, track: 1.78, wheelR: 0.38, comH: 0.64, clearance: 0.33,
     body: { w: 1.80, l: 3.6, h: 0.85 },
     travel: 0.36, freq: 1.45, damp: 0.42,
-    power: 60000, fmax: 0.25, vmax: 23, brake: 1.05, fuel: 45
+    power: 220000, fmax: 0.42, vmax: 42, brake: 1.2, fuel: 45
+  },
+  'monster-truck': {
+    mass: 2800, wheelbase: 3.80, track: 2.30, wheelR: 0.65, comH: 1.15, clearance: 0.52,
+    body: { w: 2.40, l: 5.5, h: 1.40 },
+    travel: 0.42, freq: 1.35, damp: 0.45,
+    power: 260000, fmax: 0.46, vmax: 38, brake: 1.3, fuel: 100
   }
 };
 
@@ -65,7 +71,7 @@ export function buildParams(vehicleId, ups = {}, gear = {}) {
     power: s.power * (1 + 0.09 * e),
     fmax: s.fmax * (1 + 0.07 * e),
     vmax: s.vmax * (1 + 0.03 * e),
-    vmaxLow: 6.5, lowRatio: 2.4, vmaxRev: 7,
+    vmaxLow: 9.0, lowRatio: 2.6, vmaxRev: 8,
     brake: s.brake * (1 + 0.12 * b),
     gripMult: 1 + 0.04 * t,
     tire,

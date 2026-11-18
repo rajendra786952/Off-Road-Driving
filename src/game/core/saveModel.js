@@ -2,12 +2,13 @@
 // (SaveSystem.js wraps this with Capacitor Preferences.)
 
 export const SAVE_VERSION = 3;
-export const MAX_UPGRADE = 5;
+export const MAX_UPGRADE = 8;   // levels 6-8 are the expensive late-game tiers
 // clearance + brakes only matter in the 3D expedition; the classic 2D mode ignores them.
 export const UPGRADE_KEYS = ['engine', 'tires', 'suspension', 'fuel', 'clearance', 'brakes'];
 export const TIRE_IDS = ['at', 'mud', 'rock', 'snow'];
 export const GEAR_KEYS = ['difflock', 'winch'];
-export const VEHICLE_IDS = ['mountain-jeep', 'desert-pickup', 'rally-buggy'];
+export const PAINT_IDS = ['stock', 'sand', 'arctic', 'midnight', 'crimson', 'stealth', 'gold'];
+export const VEHICLE_IDS = ['mountain-jeep', 'desert-pickup', 'rally-buggy', 'monster-truck'];
 const STARTER = 'mountain-jeep';
 
 export function defaultUpgrades() {
@@ -18,7 +19,9 @@ export function defaultSave() {
   const upgrades = {};
   const gear = {};
   const tires = {};
+  const paint = {};
   for (const id of VEHICLE_IDS) {
+    paint[id] = { owned: ['stock'], sel: 'stock' };
     upgrades[id] = defaultUpgrades();
     gear[id] = { difflock: false, winch: false };
     tires[id] = { owned: ['at'], sel: 'at' };
@@ -32,6 +35,10 @@ export function defaultSave() {
     upgrades,
     gear, // { [vehicleId]: { difflock, winch } }
     tires, // { [vehicleId]: { owned: [tireId], sel: tireId } }
+    paint, // { [vehicleId]: { owned: [paintId], sel: paintId } }
+    resume: null, // run to pick up from its last checkpoint: { trackId, difficulty, mission, vehicle, cp, state }
+    ghosts: {}, // best run per track for the ghost car: { [trackId]: { s: number[], d: number[] } }
+    daily: { date: '', done: false }, // daily challenge already paid out for this date
     levels: {}, // classic 2D: { [levelId]: { stars, bestCoins } }
     tracks: {}, // 3D expedition: { [trackId]: { done, bestTime, medal, stars, objectives, caches, runs } }
     xp: 0,
@@ -40,6 +47,8 @@ export function defaultSave() {
       sound: true,
       vibration: true,
       controlMode: 'pedals', // 'pedals' | 'splitscreen'
+      steerMode: 'buttons', // 'buttons' | 'slider' | 'tilt'  (a gamepad always works)
+      tutorialDone: false,
       showKeyHints: true,
       showFps: false,
       steerSens: 1,
@@ -48,7 +57,7 @@ export function defaultSave() {
       quality: 'auto',
       difficulty: 'standard'
     },
-    stats: { runs: 0, totalCoins: 0, stunts: 0, distance: 0, driveTime: 0, recoveries: 0, tracksDone: 0, caches: 0, golds: 0, cleanRuns: 0, relics: 0, hardcore: 0, nightRuns: 0 }
+    stats: { runs: 0, totalCoins: 0, stunts: 0, distance: 0, driveTime: 0, recoveries: 0, tracksDone: 0, caches: 0, golds: 0, cleanRuns: 0, relics: 0, hardcore: 0, nightRuns: 0, cargoRuns: 0, dailies: 0 }
   };
 }
 
@@ -82,6 +91,20 @@ export function migrateSave(raw) {
       out.tires[id].sel = out.tires[id].owned.includes(t.sel) ? t.sel : 'at';
     }
   }
+  for (const id of VEHICLE_IDS) {
+    const p = raw.paint && raw.paint[id];
+    if (p && Array.isArray(p.owned)) {
+      out.paint[id].owned = [...new Set(['stock', ...p.owned.filter((x) => PAINT_IDS.includes(x))])];
+      out.paint[id].sel = out.paint[id].owned.includes(p.sel) ? p.sel : 'stock';
+    }
+  }
+  const rs = raw.resume;
+  out.resume = rs && typeof rs === 'object' && typeof rs.trackId === 'string' && rs.state && typeof rs.state === 'object' ? rs : null;
+  out.ghosts = {};
+  if (raw.ghosts && typeof raw.ghosts === 'object') {
+    for (const [id, g] of Object.entries(raw.ghosts)) if (g && Array.isArray(g.s) && Array.isArray(g.d)) out.ghosts[id] = { s: g.s, d: g.d };
+  }
+  if (raw.daily && typeof raw.daily === 'object') out.daily = { date: String(raw.daily.date || ''), done: !!raw.daily.done };
   out.xp = Math.max(0, Math.floor(Number(raw.xp) || 0));
   out.achievements = {};
   if (raw.achievements && typeof raw.achievements === 'object') for (const k of Object.keys(raw.achievements)) out.achievements[k] = true;
@@ -98,7 +121,8 @@ export function migrateSave(raw) {
         caches: Array.isArray(v.caches) ? v.caches.map(Boolean) : [],
         relics: Array.isArray(v.relics) ? v.relics.map(Boolean) : [],
         diff: typeof v.diff === 'string' ? v.diff : '',
-        runs: Math.max(0, Math.floor(Number(v.runs) || 0))
+        runs: Math.max(0, Math.floor(Number(v.runs) || 0)),
+        times: Array.isArray(v.times) ? v.times.filter((x) => x && x.t > 0).slice(0, 5).map((x) => ({ t: Number(x.t), v: String(x.v || ''), d: String(x.d || '') })) : []
       };
     }
   }

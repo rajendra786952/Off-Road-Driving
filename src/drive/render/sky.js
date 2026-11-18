@@ -18,6 +18,8 @@ const FRAG = (octaves) => `
 precision mediump float;
 uniform vec3 uTop, uHor, uSunDir, uSunCol, uCloudCol, uGlowCol;
 uniform float uCover, uScale, uStyle, uStars, uTime, uGlow, uAurora, uDark;
+uniform sampler2D uHdrMap;
+uniform float uHdrMix, uHdrRot, uHdrLift, uHdrExp;
 varying vec3 vDir;
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 p) {
@@ -77,6 +79,17 @@ void main() {
   }
   float fade = smoothstep(0.0, 0.16, d.y);
   col = mix(col, uCloudCol * shade, clamp(c, 0.0, 1.0) * fade);
+  // photographic sky: only the part of the photo above its own horizon, turned so its sun
+  // sits where the game's sun is, eased into the horizon colour so it meets the fog cleanly
+  if (uHdrMix > 0.01) {
+    float el = mix(uHdrLift, 1.0, clamp(d.y, 0.0, 1.0));
+    vec2 hz = normalize(d.xz + vec2(0.00001, 0.0));
+    vec2 huv = vec2(atan(hz.y, hz.x) / 6.2831853 + 0.5 + uHdrRot, asin(el) / 3.14159265 + 0.5);
+    vec3 hc = texture2D(uHdrMap, huv).rgb * uHdrExp;
+    hc = pow(hc / (hc + vec3(1.0)), vec3(0.4545));
+    hc = mix(uHor, hc, smoothstep(0.0, 0.2, d.y));
+    col = mix(col, hc, uHdrMix);
+  }
   if (uGlow > 0.01) col += uGlowCol * uGlow * exp(-d.y * 8.0) * (0.55 + 0.45 * fbm(d.xz * 4.0 + uTime * 0.04));
   gl_FragColor = vec4(col * (1.0 - uDark), 1.0);
 }`;
@@ -90,7 +103,8 @@ export class Sky {
       uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uSunCol: { value: new THREE.Color() },
       uCloudCol: { value: new THREE.Color() }, uGlowCol: { value: new THREE.Color(1.0, 0.28, 0.06) },
       uCover: { value: st.cover }, uScale: { value: st.scale }, uStyle: { value: STYLE[st.style] ?? 0 },
-      uStars: { value: 0 }, uTime: { value: seed % 100 }, uGlow: { value: 0 }, uAurora: { value: 0 }, uDark: { value: 0 }
+      uStars: { value: 0 }, uTime: { value: seed % 100 }, uGlow: { value: 0 }, uAurora: { value: 0 }, uDark: { value: 0 },
+      uHdrMap: { value: null }, uHdrMix: { value: 0 }, uHdrRot: { value: 0 }, uHdrLift: { value: env.hdrLift ?? 0.1 }, uHdrExp: { value: 1.7 }
     };
     this.geo = new THREE.SphereGeometry(950, 24, 12);
     this.mat = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG(quality === 'low' ? 3 : 4), side: THREE.BackSide, depthWrite: false, fog: false });
@@ -103,7 +117,7 @@ export class Sky {
   /** Distant terrain ring - a different shape language per region. */
   _buildSilhouette(seed) {
     const kind = this.env.silhouette;
-    const segs = 144, pos = [], colr = [], idx = [];
+    const segs = 144, pos = [], colr = [], idx = [], rp = [];
     const base = this.env.cliff;
     const prof = (a, ring) => {
       const x = Math.cos(a), z = Math.sin(a);
@@ -136,6 +150,7 @@ export class Sky {
         const hN = prof(a, ring);
         const h = amp * hN;
         pos.push(Math.cos(a) * r, -40, Math.sin(a) * r, Math.cos(a) * r, h, Math.sin(a) * r);
+        rp.push(a + ring * 1.7, 0, a + ring * 1.7, 0.35 + hN);
         const snow = kind === 'snowpeaks' || (kind === 'alpine' && hN > 0.95);
         const top = snow && hN > 0.75 ? [0.95, 0.97, 1.0] : kind === 'canopy' ? this.env.foliage : kind === 'dunes' ? this.env.grass2 : base;
         const bot = kind === 'canopy' ? this.env.foliage : kind === 'dunes' ? this.env.grass : base;
@@ -146,12 +161,14 @@ export class Sky {
     this.ringGeo = new THREE.BufferGeometry();
     this.ringGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     this.ringGeo.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+    this.ringGeo.setAttribute('rp', new THREE.Float32BufferAttribute(rp, 2));
     this.ringGeo.setIndex(idx);
     this.ringU = { uLight: { value: new THREE.Color(1, 1, 1) }, uHaze: { value: new THREE.Color(1, 1, 1) }, uMix: { value: 0.5 } };
     this.ringMat = new THREE.ShaderMaterial({
       uniforms: this.ringU, side: THREE.DoubleSide, depthWrite: false, fog: false,
-      vertexShader: 'attribute vec3 color; varying vec3 vC; void main(){ vC = color; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: 'precision mediump float; uniform vec3 uLight, uHaze; uniform float uMix; varying vec3 vC; void main(){ gl_FragColor = vec4(mix(vC * uLight, uHaze, uMix), 1.0); }'
+      // rp = (angle, height): used for ridge / gully shading and for haze that thickens toward the base
+      vertexShader: 'attribute vec3 color; attribute vec2 rp; varying vec3 vC; varying vec2 vP; void main(){ vC = color; vP = rp; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'precision mediump float; uniform vec3 uLight, uHaze; uniform float uMix; varying vec3 vC; varying vec2 vP; void main(){ float g = sin(vP.x * 46.0 + vP.y * 7.0) * 0.5 + sin(vP.x * 113.0 - vP.y * 15.0) * 0.3 + sin(vP.x * 19.0 + vP.y * 3.0) * 0.4; float sh = 0.84 + 0.2 * g * smoothstep(0.0, 0.5, vP.y); float hz = clamp(uMix + (1.0 - smoothstep(0.0, 0.9, vP.y)) * 0.3, 0.0, 1.0); gl_FragColor = vec4(mix(vC * uLight * sh, uHaze, hz), 1.0); }'
     });
     this.ring = new THREE.Mesh(this.ringGeo, this.ringMat);
     this.ring.renderOrder = -9;
@@ -168,8 +185,18 @@ export class Sky {
     u.uCloudCol.value.copy(a.cloudCol);
     u.uCover.value = a.cover; u.uStars.value = a.stars; u.uGlow.value = a.glow; u.uAurora.value = a.aurora;
     u.uTime.value += dt * (1 + a.wind * 3);
+    // the photo fades in once loaded and gives way to the procedural sky in bad weather, at dusk and at night
+    this.hdrFade = this.hdrMap ? Math.min(1, (this.hdrFade || 0) + dt * 0.8) : 0;
+    u.uHdrMix.value = (a.hdr || 0) * this.hdrFade;
     // the ring is tinted toward the horizon colour (aerial perspective) and darkens at night
     this.ringU.uLight.value.copy(a.ringLight); this.ringU.uHaze.value.copy(a.hor); this.ringU.uMix.value = a.ringMix;
+  }
+
+  /** Use an equirectangular HDR as the clear-day sky. rot = fraction of a turn that lines its sun up with the game's. */
+  setHdr(tex, rot) {
+    this.hdrMap = tex;
+    this.uniforms.uHdrMap.value = tex;
+    this.uniforms.uHdrRot.value = rot;
   }
 
   dispose() { this.geo.dispose(); this.mat.dispose(); this.ringGeo.dispose(); this.ringMat.dispose(); }

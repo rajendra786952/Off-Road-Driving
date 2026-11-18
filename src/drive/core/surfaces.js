@@ -7,25 +7,25 @@
 //   rough - extra high-frequency vibration (camera / audio only)
 //   color - base vertex colour (linear-ish RGB 0..1)
 export const SURFACES = {
-  dirt:     { grip: 0.92, roll: 0.025, sink: 0.00, dig: 0.03, drag: 0,    rough: 0.25, color: [0.47, 0.35, 0.23] },
-  gravel:   { grip: 0.78, roll: 0.035, sink: 0.01, dig: 0.04, drag: 0,    rough: 0.45, color: [0.52, 0.49, 0.44] },
-  grass:    { grip: 0.70, roll: 0.055, sink: 0.02, dig: 0.05, drag: 50,   rough: 0.35, color: [0.30, 0.46, 0.20] },
-  mud:      { grip: 0.46, roll: 0.090, sink: 0.09, dig: 0.16, drag: 260,  rough: 0.20, color: [0.29, 0.20, 0.13] },
-  deepmud:  { grip: 0.34, roll: 0.130, sink: 0.17, dig: 0.24, drag: 520,  rough: 0.15, color: [0.21, 0.14, 0.09] },
-  bog:      { grip: 0.28, roll: 0.200, sink: 0.26, dig: 0.30, drag: 800,  rough: 0.10, color: [0.16, 0.11, 0.07] },
-  deepsand: { grip: 0.50, roll: 0.125, sink: 0.13, dig: 0.26, drag: 380,  rough: 0.10, color: [0.84, 0.70, 0.46] },
-  ash:      { grip: 0.50, roll: 0.055, sink: 0.05, dig: 0.12, drag: 130,  rough: 0.20, color: [0.20, 0.19, 0.19] },
-  lavarock: { grip: 0.96, roll: 0.030, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.85, color: [0.10, 0.09, 0.09] },
-  lava:     { grip: 0.55, roll: 0.090, sink: 0.06, dig: 0.00, drag: 300,  rough: 0.30, color: [2.2, 0.62, 0.10], hot: true },
-  rock:     { grip: 1.02, roll: 0.020, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.70, color: [0.48, 0.47, 0.46] },
-  wetrock:  { grip: 0.58, roll: 0.020, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.70, color: [0.33, 0.34, 0.36] },
-  riverbed: { grip: 0.55, roll: 0.060, sink: 0.04, dig: 0.08, drag: 160,  rough: 0.60, color: [0.36, 0.33, 0.28] },
-  sand:     { grip: 0.60, roll: 0.085, sink: 0.06, dig: 0.20, drag: 240,  rough: 0.15, color: [0.76, 0.66, 0.45] },
-  snow:     { grip: 0.42, roll: 0.065, sink: 0.07, dig: 0.14, drag: 200,  rough: 0.15, color: [0.76, 0.82, 0.90] },
-  deepsnow: { grip: 0.36, roll: 0.110, sink: 0.16, dig: 0.22, drag: 420,  rough: 0.10, color: [0.96, 0.97, 1.00] },
-  ice:      { grip: 0.13, roll: 0.012, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.05, color: [0.66, 0.80, 0.90] },
-  wood:     { grip: 0.80, roll: 0.022, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.55, color: [0.45, 0.33, 0.20] },
-  scree:    { grip: 0.62, roll: 0.060, sink: 0.03, dig: 0.10, drag: 90,   rough: 0.80, color: [0.50, 0.46, 0.42] }
+  dirt:     { grip: 0.95, roll: 0.022, sink: 0.00, dig: 0.02, drag: 0,    rough: 0.25, color: [0.47, 0.35, 0.23] },
+  gravel:   { grip: 0.85, roll: 0.030, sink: 0.01, dig: 0.03, drag: 0,    rough: 0.45, color: [0.52, 0.49, 0.44] },
+  grass:    { grip: 0.78, roll: 0.045, sink: 0.02, dig: 0.03, drag: 25,   rough: 0.35, color: [0.30, 0.46, 0.20] },
+  mud:      { grip: 0.52, roll: 0.085, sink: 0.08, dig: 0.17, drag: 170,  rough: 0.20, color: [0.29, 0.20, 0.13] },
+  deepmud:  { grip: 0.40, roll: 0.115, sink: 0.13, dig: 0.20, drag: 340,  rough: 0.15, color: [0.21, 0.14, 0.09] },
+  bog:      { grip: 0.30, roll: 0.170, sink: 0.20, dig: 0.26, drag: 540,  rough: 0.10, color: [0.16, 0.11, 0.07] },
+  deepsand: { grip: 0.56, roll: 0.110, sink: 0.10, dig: 0.20, drag: 250,  rough: 0.10, color: [0.84, 0.70, 0.46] },
+  ash:      { grip: 0.56, roll: 0.050, sink: 0.04, dig: 0.10, drag: 95,   rough: 0.20, color: [0.20, 0.19, 0.19] },
+  lavarock: { grip: 0.98, roll: 0.025, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.85, color: [0.10, 0.09, 0.09] },
+  lava:     { grip: 0.65, roll: 0.075, sink: 0.05, dig: 0.00, drag: 180,  rough: 0.30, color: [2.2, 0.62, 0.10], hot: true },
+  rock:     { grip: 1.05, roll: 0.018, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.70, color: [0.48, 0.47, 0.46] },
+  wetrock:  { grip: 0.68, roll: 0.018, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.70, color: [0.33, 0.34, 0.36] },
+  riverbed: { grip: 0.60, roll: 0.055, sink: 0.04, dig: 0.07, drag: 125,  rough: 0.60, color: [0.36, 0.33, 0.28] },
+  sand:     { grip: 0.66, roll: 0.075, sink: 0.05, dig: 0.14, drag: 150,  rough: 0.15, color: [0.76, 0.66, 0.45] },
+  snow:     { grip: 0.50, roll: 0.060, sink: 0.06, dig: 0.10, drag: 130,  rough: 0.15, color: [0.76, 0.82, 0.90] },
+  deepsnow: { grip: 0.43, roll: 0.100, sink: 0.12, dig: 0.16, drag: 270,  rough: 0.10, color: [0.96, 0.97, 1.00] },
+  ice:      { grip: 0.16, roll: 0.012, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.05, color: [0.66, 0.80, 0.90] },
+  wood:     { grip: 0.88, roll: 0.020, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.55, color: [0.45, 0.33, 0.20] },
+  scree:    { grip: 0.67, roll: 0.055, sink: 0.03, dig: 0.08, drag: 70,   rough: 0.80, color: [0.50, 0.46, 0.42] }
 };
 for (const [name, s] of Object.entries(SURFACES)) s.name = name;
 

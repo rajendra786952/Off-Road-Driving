@@ -48,6 +48,11 @@ const CSS = `
 .tt3d .load .lb{width:40vw;height:1.2vh;background:#22323d;border-radius:1vh;overflow:hidden}
 .tt3d .load .lb i{display:block;height:100%;width:0;background:#ffd23f}
 .tt3d .keys .steer,.tt3d .keys .pedal{opacity:.0;pointer-events:none}
+.tt3d .steerpad{left:3vh;bottom:3.5vh;width:33vh;height:15vh;border-radius:8vh;touch-action:none}
+.tt3d .steerpad i{position:absolute;top:50%;left:50%;width:11vh;height:11vh;margin:-5.5vh 0 0 -5.5vh;border-radius:50%;background:rgba(255,255,255,.55);border:2px solid #fff;pointer-events:none}
+.tt3d .steerpad:before{content:'';position:absolute;left:50%;top:22%;bottom:22%;width:2px;background:rgba(255,255,255,.35)}
+.tt3d .coach{position:absolute;left:50%;bottom:27vh;transform:translateX(-50%);max-width:70vw;text-align:center;font-size:2.6vh;font-weight:bold;background:rgba(20,60,90,.86);border:2px solid #8fd0ff;padding:1.2vh 2.4vh;border-radius:1.4vh;display:none;text-shadow:0 1px 2px #000}
+.tt3d .coach small{display:block;font-weight:normal;font-size:1.9vh;opacity:.85;margin-top:.4vh}
 `;
 
 // vh / vw -> CSS variables set from the overlay's measured size
@@ -60,7 +65,9 @@ export class Hud {
     if (!styleEl) { styleEl = el('style'); styleEl.textContent = units(CSS); document.head.appendChild(styleEl); }
     this.root = root;
     this.opts = opts;
-    this.input = { gas: 0, brake: 0, steerL: 0, steerR: 0, hand: false, low: false, lock: false, winch: false };
+    this.input = { gas: 0, brake: 0, steerL: 0, steerR: 0, steerA: 0, hand: false, low: false, lock: false, winch: false };
+    this.pad = { prev: [], look: 0, active: false };      // gamepad state
+    this.steerMode = opts.steerMode || 'buttons';
     this.keys = {};
     this.actions = {};
     const hud = (this.hud = el('div', 'hud'));
@@ -77,7 +84,8 @@ export class Hud {
     this.toastEl = el('div', 'toast');
     this.warnEl = el('div', 'warn');
     this.map = el('canvas', 'map');
-    hud.append(this.top, this.prog, this.toastEl, this.warnEl, this.map);
+    this.coachEl = el('div', 'coach');
+    hud.append(this.top, this.prog, this.toastEl, this.warnEl, this.map, this.coachEl);
 
     // ---- dashboard
     const dash = el('div', 'dash');
@@ -89,6 +97,10 @@ export class Hud {
     this.dmgBar = el('div', 'bar', '<i style="background:#e0463c;width:0"></i>');
     this.lbRpm = el('div', '', 'RPM'); this.lbFuel = el('div', '', 'FUEL'); this.lbDmg = el('div', '', 'DAMAGE');
     bars.append(this.lbRpm, this.rpmBar, this.lbFuel, this.fuelBar, this.lbDmg, this.dmgBar);
+    if (opts.cargo) {
+      this.cargoBar = el('div', 'bar', '<i style="background:#8fd0ff;width:100%"></i>');
+      bars.append(el('div', '', 'CARGO'), this.cargoBar);
+    }
     if (opts.hot) {
       this.heatBar = el('div', 'bar', '<i style="background:#f0b429;width:35%"></i>');
       bars.append(el('div', '', 'TEMP'), this.heatBar);
@@ -113,10 +125,39 @@ export class Hud {
       hud.appendChild(b);
       return b;
     };
-    const L = mk('steer', '&#9664;', { left: '3vh' });
-    const R = mk('steer', '&#9654;', { left: '21vh' });
-    hold(L, () => { this.input.steerL = 1; }, () => { this.input.steerL = 0; });
-    hold(R, () => { this.input.steerR = 1; }, () => { this.input.steerR = 0; });
+    if (this.steerMode === 'slider') {
+      // analog pad: slide left / right, release to centre
+      const pad = mk('steerpad', '<i></i>', {});
+      const knob = pad.querySelector('i');
+      const set = (e) => {
+        const r = pad.getBoundingClientRect();
+        const v = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width - 0.5) * 2.3));
+        // a little dead zone and a gentle curve make small corrections easy
+        const a = Math.abs(v) < 0.06 ? 0 : Math.sign(v) * Math.pow((Math.abs(v) - 0.06) / 0.94, 1.35);
+        this.input.steerA = -a;
+        knob.style.transform = `translateX(${v * r.width * 0.33}px)`;
+      };
+      pad.addEventListener('pointermove', (e) => { if (pad.classList.contains('down')) set(e); });
+      hold(pad, set, () => { this.input.steerA = 0; knob.style.transform = ''; });
+    } else if (this.steerMode === 'tilt') {
+      // tilt the phone like a steering wheel (landscape). Falls back to the buttons if there is no sensor.
+      this.onTilt = (e) => {
+        if (e.beta === null || e.gamma === null) return;
+        const ang = (screen.orientation && screen.orientation.angle) || 0;
+        const roll = ang === 90 ? -e.beta : ang === 270 || ang === -90 ? e.beta : -e.gamma;
+        const v = Math.max(-1, Math.min(1, roll / 24));
+        this.input.steerA = Math.abs(v) < 0.05 ? 0 : v;
+        this.tiltSeen = true;
+      };
+      window.addEventListener('deviceorientation', this.onTilt);
+    }
+    if (this.steerMode !== 'slider') {
+      const L = mk('steer', '&#9664;', { left: '3vh' });
+      const R = mk('steer', '&#9654;', { left: '21vh' });
+      hold(L, () => { this.input.steerL = 1; }, () => { this.input.steerL = 0; });
+      hold(R, () => { this.input.steerR = 1; }, () => { this.input.steerR = 0; });
+      if (this.steerMode === 'tilt') { L.style.opacity = R.style.opacity = '0.45'; }
+    }
 
     const gas = mk('pedal', '<i class="fill"></i><span>GAS</span>', { right: '3vh', height: '30vh' });
     const brake = mk('pedal', '<span>BRAKE<br>/ REV</span>', { right: '20vh', height: '19vh' });
@@ -194,16 +235,51 @@ export class Hud {
     (name === 'low' ? this.bLow : this.bLock).classList.toggle('on', this.input[name]);
   }
 
-  /** Combined touch + keyboard state. */
+  /** Poll the first connected gamepad: stick steers, triggers are the pedals, face buttons the tools. */
+  _gamepad() {
+    const out = { steer: 0, gas: 0, brake: 0, hand: false, winch: false };
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let gp = null;
+    for (const p of pads) if (p && p.connected) { gp = p; break; }
+    this.pad.active = !!gp;
+    if (!gp) { this.pad.look = 0; return out; }
+    const ax = (i) => { const v = gp.axes[i] || 0; return Math.abs(v) < 0.12 ? 0 : (v - Math.sign(v) * 0.12) / 0.88; };
+    const bt = (i) => (gp.buttons[i] ? gp.buttons[i].value || (gp.buttons[i].pressed ? 1 : 0) : 0);
+    out.steer = -ax(0);
+    out.gas = bt(7); out.brake = bt(6);
+    out.hand = bt(0) > 0.5; out.winch = bt(1) > 0.5;
+    this.pad.look = ax(2);
+    const edge = (i, fn) => { const d = bt(i) > 0.5; if (d && !this.pad.prev[i]) fn(); this.pad.prev[i] = d; };
+    edge(2, () => this.toggle('low'));
+    edge(3, () => this.toggle('lock'));
+    edge(4, () => this.fire('recover'));
+    edge(5, () => this.fire('camera'));
+    edge(9, () => this.fire('pause'));
+    return out;
+  }
+
+  /** Camera look input -1..1 (keys Q / E, or the right stick). + = look left. */
+  look() { return (this.keys.KeyQ ? 1 : 0) - (this.keys.KeyE ? 1 : 0) - this.pad.look; }
+
+  /** Show (or hide with null) the coach box. */
+  coach(title, sub) {
+    if (!title) { this.coachEl.style.display = 'none'; return; }
+    this.coachEl.innerHTML = `${title}${sub ? `<small>${sub}</small>` : ''}`;
+    this.coachEl.style.display = 'block';
+  }
+
+  /** Combined touch + keyboard + gamepad state. */
   read() {
     const k = this.keys, i = this.input;
+    const gp = this._gamepad();
     const kGas = k.ArrowUp || k.KeyW ? (k.ControlLeft ? 0.5 : 1) : 0;
     const kBrake = k.ArrowDown || k.KeyS ? 1 : 0;
     const left = Math.max(i.steerL, k.ArrowLeft || k.KeyA ? 1 : 0);
     const right = Math.max(i.steerR, k.ArrowRight || k.KeyD ? 1 : 0);
     return {
-      gas: Math.max(i.gas, kGas), brake: Math.max(i.brake, kBrake), steer: left - right,
-      hand: i.hand || !!k.Space, low: i.low, lock: i.lock, winch: i.winch || !!k.KeyE
+      gas: Math.max(i.gas, kGas, gp.gas), brake: Math.max(i.brake, kBrake, gp.brake),
+      steer: Math.max(-1, Math.min(1, left - right + i.steerA + gp.steer)),
+      hand: i.hand || !!k.Space || gp.hand, low: i.low, lock: i.lock, winch: i.winch || !!k.KeyF || gp.winch
     };
   }
 
@@ -277,11 +353,17 @@ export class Hud {
       this.info.innerHTML = `${gear} &nbsp; ${veh.wheels[0].surface.name.toUpperCase()}<br>${extra.weather}${veh.lock ? '<br>LOCKED' : ''}`;
       this.bWinch.classList.toggle('on', !!veh.winchAnchor && this.opts.winch && !this.input.winch);
 
+      if (this.cargoBar) {
+        this.cargoBar.firstChild.style.width = `${ss.cargo}%`;
+        this.cargoBar.firstChild.style.background = ss.cargo < 40 ? '#e0463c' : ss.cargo < 70 ? '#f0b429' : '#8fd0ff';
+      }
       let warn = '';
       if (veh.upY < 0.35) warn = 'ROLLED OVER<br>press RECOVER';
       else if (ss.fuel <= 0) warn = 'OUT OF FUEL<br>press RECOVER for a tow';
       else if (ss.overheated) warn = 'OVERHEATED - ease off the throttle';
       else if (ss.damage >= 100) warn = 'ENGINE DAMAGED - limp mode until next checkpoint';
+      else if (ss.flats.some(Boolean)) warn = 'PUNCTURE - less grip until the next checkpoint';
+      else if (ss.brakeHeat > 0.8) warn = 'BRAKES FADING - ease off, use low range downhill';
       else if (ss.heat > 0.88) warn = 'ENGINE HOT';
       else if (ss.offRoute) warn = 'OFF ROUTE';
       else if (ss.stuckTime > 4) warn = this.opts.winch && veh.winchAnchor ? 'STUCK - hold WINCH' : 'STUCK - ease off, reverse, or RECOVER';
@@ -367,6 +449,7 @@ export class Hud {
   dispose() {
     window.removeEventListener('keydown', this.onKey);
     window.removeEventListener('keyup', this.onKey);
+    if (this.onTilt) window.removeEventListener('deviceorientation', this.onTilt);
     clearTimeout(this.toastTimer);
   }
 }

@@ -744,8 +744,108 @@ export class Track {
         props.push(p);
       }
     }
+    this._solidScenery(cx, cz, ch, props);
     ch.props = props;
     return props;
+  }
+
+  /**
+   * Solid scenery for a chunk: fallen logs and stumps among the trees, plus roadside
+   * furniture (marker posts, chevron signs on tight bends, guard fences on the outside of
+   * bends above a drop). Deterministic, shared by the renderer and the physics colliders
+   * (r = collision radius, h = collision height). Logs sit well clear of the road.
+   */
+  _solidScenery(cx, cz, ch, props) {
+    const env = this.env, seed = this.seed;
+    const wet = this.water.length > 0 || this.sidePatches;
+    const logDensity = env.trees > 0.03 ? ({ grass: 0.5, scree: 0.12, sand: 0.05, deepsnow: 0.2, ash: 0.1 }[env.off] ?? 0.2) : 0;
+    if (logDensity > 0) {
+      const G = 10;
+      const i0 = Math.floor((cx * CHUNK - 5) / G), i1 = Math.floor((cx * CHUNK + CHUNK + 5) / G);
+      const j0 = Math.floor((cz * CHUNK - 5) / G), j1 = Math.floor((cz * CHUNK + CHUNK + 5) / G);
+      for (let wz = j0; wz <= j1; wz++) {
+        for (let wx = i0; wx <= i1; wx++) {
+          if (rand2(wx, wz, seed + 811) > logDensity * 0.32) continue;
+          const x = (wx + 0.8 * (rand2(wx, wz, seed + 812) - 0.5)) * G, z = (wz + 0.8 * (rand2(wx, wz, seed + 813) - 0.5)) * G;
+          if (Math.floor(x / CHUNK) !== cx || Math.floor(z / CHUNK) !== cz) continue;
+          const q = (Math.round(z - cz * CHUNK) + 1) * CW + Math.round(x - cx * CHUNK) + 1;
+          if (ch.e[q] < 6.5) continue;
+          const slope = Math.abs(ch.h[q + 1] - ch.h[q - 1]) + Math.abs(ch.h[q + CW] - ch.h[q - CW]);
+          if (slope > 1.1) continue;
+          const y = this.heightAt(x, z);
+          if (wet) { const sq = this.surfaceAt(x, z); if (sq.waterY > y - 0.3 || sq.surface.hot) continue; }
+          const v = rand2(wx, wz, seed + 814), rot = rand2(wx, wz, seed + 815) * 6.283;
+          if (v < 0.6) {
+            const len = 2.6 + 2.4 * rand2(wx, wz, seed + 816), rad = 0.5 + 0.6 * v;
+            const ax = Math.cos(rot), az = -Math.sin(rot);       // log axis on the ground
+            const tilt = Math.atan2(this.heightAt(x + ax, z + az) - this.heightAt(x - ax, z - az), 2);
+            props.push({ type: 'log', x, z, y, scale: 1, rot, v, r: 0, len, rad, tilt });
+            for (let u = -len / 2 + 0.4; u <= len / 2 - 0.39; u += 0.8) {
+              const sx = x + ax * u, sz = z + az * u;
+              props.push({ type: 'solid', x: sx, z: sz, y: this.heightAt(sx, sz), scale: 1, rot: 0, v, r: rad * 0.45, h: rad * 0.9 });
+            }
+          } else {
+            const sc = 0.7 + 0.9 * (v - 0.6) / 0.4;
+            props.push({ type: 'stump', x, z, y, scale: sc, rot, v, r: 0.5 * sc, h: 0.6 + 0.4 * v });
+          }
+        }
+      }
+    }
+    if (!this._roadside) this._roadside = this._buildRoadside();
+    const items = this._roadside.get(key2(cx, cz));
+    if (!items) return;
+    for (const it of items) {
+      const y = this.heightAt(it.x, it.z);
+      const sq = this.surfaceAt(it.x, it.z);
+      if (sq.onRoad || sq.waterY > y - 0.1 || sq.surface.hot) continue;
+      if (it.type !== 'fence' && it.type !== 'solid' && Math.abs(y - this.PY[it.i]) > (it.type === 'sign' ? 2.6 : 1.6)) continue;   // not hanging off an edge or buried in a bank
+      const p = { type: it.type, x: it.x, z: it.z, y, scale: 1, rot: it.rot || 0, v: 0.5, r: it.r, h: it.h };
+      if (it.type === 'fence') { p.x2 = it.x2; p.z2 = it.z2; p.y2 = this.heightAt(it.x2, it.z2); }
+      if (it.type === 'sign') p.dir = it.dir;
+      props.push(p);
+    }
+  }
+
+  /** Roadside furniture positions (no heights yet), bucketed by chunk. Built once per track. */
+  _buildRoadside() {
+    const map = new Map();
+    const add = (x, z, o) => {
+      const k = key2(Math.floor(x / CHUNK), Math.floor(z / CHUNK));
+      let a = map.get(k);
+      if (!a) map.set(k, (a = []));
+      a.push({ x, z, ...o });
+    };
+    const { PX, PZ, TX, TZ, HW, S, SL, SR } = this;
+    const snowy = this.env.off === 'deepsnow';
+    const n = this.nMain;
+    for (let i = 4; i < n - 4; i++) {
+      const s = S[i];
+      if (this.bridges.some((b) => s > b.s0 - 4 && s < b.s1 + 4) || this.water.some((w) => s > w.s0 - 2 && s < w.s1 + 2)) continue;
+      const tx = TX[i], tz = TZ[i], hw = HW[i], rot = Math.atan2(tx, tz);
+      const curv = this.roadShape(i, 3).curv;
+      const sharp = Math.abs(curv) >= 0.022;
+      for (const sd of [1, -1]) {                               // +1 = left of travel
+        const outside = curv * sd < 0;
+        const fence = sharp && outside && (sd > 0 ? SL[i] : SR[i]) < -3.5;
+        if (fence) {
+          if (i % 2 === 0) {
+            const j = Math.min(n - 1, i + 2), off = hw + 0.62, off2 = HW[j] + 0.62;
+            const x = PX[i] + tz * off * sd, z = PZ[i] - tx * off * sd;
+            const x2 = PX[j] + TZ[j] * off2 * sd, z2 = PZ[j] - TX[j] * off2 * sd;
+            add(x, z, { type: 'fence', x2, z2, r: 0.1, h: 1.1, i });
+            for (const u of [0.33, 0.66]) add(x + (x2 - x) * u, z + (z2 - z) * u, { type: 'solid', r: 0.08, h: 1.0, i });
+          }
+        } else if (snowy ? i % 7 === 0 : sharp && i % 4 === 0) {
+          const off = hw + 1.25;
+          add(PX[i] + tz * off * sd, PZ[i] - tx * off * sd, { type: 'post', rot, r: 0.07, h: snowy ? 2.3 : 1.0, i });
+        }
+        if (Math.abs(curv) >= 0.045 && outside && i % 8 === 0) {
+          const off = hw + 1.55;
+          add(PX[i] + tz * off * sd, PZ[i] - tx * off * sd, { type: 'sign', rot, dir: curv > 0 ? 1 : -1, r: 0.09, h: 2.0, i });
+        }
+      }
+    }
+    return map;
   }
 
   /** Call fn(prop) for solid props near (x,z). */

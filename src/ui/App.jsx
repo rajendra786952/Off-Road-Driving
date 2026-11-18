@@ -9,10 +9,10 @@ import { REGIONS } from '../drive/tracks/regions.js';
 import { TRACK_META } from '../drive/tracks/meta.js';
 import { WEATHER, TIRES } from '../drive/core/surfaces.js';
 import { DIFFICULTY, fmtTime } from '../drive/core/session.js';
-import { isTrackUnlocked, isRegionUnlocked, regionProgress, playerLevel, ACHIEVEMENTS } from '../drive/core/progress.js';
+import { isTrackUnlocked, isRegionUnlocked, regionProgress, playerLevel, ACHIEVEMENTS, dailyChallenge } from '../drive/core/progress.js';
 import { UPGRADE_INFO, GEAR_INFO, buildParams } from '../drive/core/specs.js';
 import { launchDrive } from '../drive/launch.js';
-import { VEHICLES } from '../game/config/vehicles.js';
+import { VEHICLES, PAINTS } from '../game/config/vehicles.js';
 import { MAX_UPGRADE, UPGRADE_KEYS, GEAR_KEYS, TIRE_IDS, upgradeCost } from '../game/core/saveModel.js';
 import { DEBUG } from '../game/config/constants.js';
 import { vibrate } from '../game/systems/platform.js';
@@ -61,19 +61,30 @@ function TopBar({ title, onBack, save, right }) {
 function Stars({ n, of }) { return <span className="stars">{'★'.repeat(n)}<em>{'★'.repeat(Math.max(0, of - n))}</em></span>; }
 
 // ------------------------------------------------------------------- home
-function Home({ go, save, shell }) {
+function Home({ go, save, shell, onDrive }) {
   const nt = nextTrack(save);
+  const rs = save.resume && TRACK_META.find((t) => t.id === save.resume.trackId) ? save.resume : null;
+  const rsMeta = rs && TRACK_META.find((t) => t.id === rs.trackId);
+  const dc = dailyChallenge(save);
+  const dcMeta = TRACK_META.find((t) => t.id === dc.trackId);
   const region = REGIONS.find((r) => r.id === nt.region);
   const done = TRACK_META.filter((t) => save.tracks[t.id]?.done).length;
   const veh = save.selectedVehicle;
   return (
     <div className="screen home">
-      <Backdrop region={region.id} dim={0.5} />
+      <Backdrop region={nt.env || region.id} dim={0.5} />
       <TopBar title="" save={save} />
       <div className="home-grid">
         <div className="home-left">
           <div className="logo"><span>TRAIL</span><b>TORQUE</b></div>
-          <p className="tag">Eight regions. Forty expeditions. One truck.</p>
+          <p className="tag">Eight regions. Forty expeditions. Five open tours.</p>
+          {rs && (
+            <button className="cta" style={{ marginBottom: '0.6em' }} onClick={() => { sfx.go(); onDrive(rs.trackId, rs.difficulty, undefined, { resume: true }); }}>
+              <small>RESUME YOUR RUN</small>
+              <strong>{rsMeta.name}</strong>
+              <span>From checkpoint {rs.cp} &middot; {DIFFICULTY[rs.difficulty]?.name || 'Standard'}{rs.mission === 'cargo' ? ' · cargo run' : ''}</span>
+            </button>
+          )}
           <button className="cta" onClick={() => { sfx.go(); go('tracks', { region: region.id, track: nt.id }); }}>
             <small>{done === 0 ? 'START EXPEDITION' : done >= TRACK_META.length ? 'REPLAY' : 'CONTINUE EXPEDITION'}</small>
             <strong>{nt.name}</strong>
@@ -81,6 +92,7 @@ function Home({ go, save, shell }) {
           </button>
           <nav className="tiles">
             <Btn kind="tile" onClick={() => go('regions')}><b>Expedition</b><span>{done}/{TRACK_META.length} tracks</span></Btn>
+            <Btn kind="tile" onClick={() => go('tracks', { region: dcMeta.region, track: dc.trackId })}><b>Daily challenge</b><span>{dc.done ? 'Done - back tomorrow' : `${dcMeta.name} · +${coins(dc.bonus)}`}</span></Btn>
             <Btn kind="tile" onClick={() => go('garage')}><b>Garage</b><span>Upgrades &amp; tyres</span></Btn>
             <Btn kind="tile" onClick={() => go('profile')}><b>Profile</b><span>{(save.stats.distance / 1000).toFixed(1)} km driven</span></Btn>
             <Btn kind="tile" onClick={() => go('achievements')}><b>Achievements</b><span>{Object.keys(save.achievements).length}/{ACHIEVEMENTS.length}</span></Btn>
@@ -89,7 +101,7 @@ function Home({ go, save, shell }) {
           </nav>
         </div>
         <div className="home-right">
-          <GaragePreview vehicleId={veh} ups={save.upgrades[veh]} gear={save.gear[veh]} tire={save.tires[veh].sel} />
+          <GaragePreview vehicleId={veh} ups={save.upgrades[veh]} gear={save.gear[veh]} tire={save.tires[veh].sel} paint={save.paint[veh].sel} />
           <div className="veh-tag">{VEHICLES.find((v) => v.id === veh).name}</div>
         </div>
       </div>
@@ -110,7 +122,7 @@ function Regions({ go, back, save }) {
           return (
             <button key={r.id} className={`region-card${open ? '' : ' locked'}`} style={{ '--accent': r.color }}
               onClick={() => { if (!open) { sfx.deny(); return; } sfx.click(); go('tracks', { region: r.id }); }}>
-              <Backdrop region={r.id} dim={open ? 0.18 : 0.72} />
+              <Backdrop region={r.open ? 'ridge' : r.id} dim={open ? 0.18 : 0.72} />
               <div className="rc-top"><span className="num">{String(r.n).padStart(2, '0')}</span><span className="lvl-badge">{r.level}</span></div>
               <div className="rc-body">
                 <h2>{r.name}</h2>
@@ -134,15 +146,19 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
   const firstOpen = list.find((t) => !save.tracks[t.id]?.done && (DEBUG || isTrackUnlocked(save, t.id))) || list[0];
   const [sel, setSel] = useState(params.track && list.find((t) => t.id === params.track) ? params.track : firstOpen.id);
   const [diff, setDiff] = useState(save.settings.difficulty || 'standard');
+  const [mission, setMission] = useState('standard');
+  const dc = dailyChallenge(save);
   const t = list.find((x) => x.id === sel) || list[0];
   const open = DEBUG || isTrackUnlocked(save, t.id);
   const rec = save.tracks[t.id];
   const n = TRACK_META.indexOf(t) + 1;
   const veh = VEHICLES.find((v) => v.id === save.selectedVehicle);
   const objTotal = 5;
+  const rs = save.resume && save.resume.trackId === t.id ? save.resume : null;
+  const isDaily = dc.trackId === t.id && !dc.done;
   return (
     <div className="screen tracks" style={{ '--accent': region.color }}>
-      <Backdrop region={region.id} dim={0.7} />
+      <Backdrop region={t.env || region.id} dim={0.7} />
       <TopBar title={region.name} onBack={back} save={save} right={<Btn kind="ghost" onClick={() => go('garage')}>Garage</Btn>} />
       <div className="tracks-grid">
         <ol className="track-list">
@@ -170,9 +186,13 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
             <span><small>Time of day</small>{whenLabel(t)}{endsAtNight(t) ? ' ☾' : ''}</span>
             <span><small>Gold time</small>{fmtTime(t.par.gold)}</span>
             <span><small>Reward</small>{coins(t.reward * DIFFICULTY[diff].reward)}</span>
+            {isDaily && <span className="wide" style={{ borderColor: '#ffd23f' }}><small>Daily challenge</small>Finish today for +{coins(dc.bonus)}</span>}
             <span className="wide"><small>Recommended</small>{t.rec}</span>
             <span className="wide"><small>Your truck</small>{veh.name} &middot; {TIRES[save.tires[veh.id].sel].name}</span>
           </div>
+          {rec?.done && (rec.times || []).length > 0 && (
+            <p className="diff-desc" style={{ margin: '0.2em 0' }}>Your best times: {rec.times.map((x, i) => `${i + 1}. ${fmtTime(x.t)}`).join('   ')}{save.ghosts[t.id] ? '  ·  your ghost races you' : ''}</p>
+          )}
           {rec?.done && (
             <div className="record">
               <b>Best {fmtTime(rec.bestTime)}</b>{rec.medal ? <span className={`medal m${rec.medal}`}>{MEDAL[rec.medal]}</span> : null}
@@ -188,8 +208,20 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
             ))}
           </div>
           <p className="diff-desc">{DIFFICULTY[diff].desc}</p>
+          <div className="diff">
+            {[['standard', 'Expedition', 'Reach the finish'], ['cargo', 'Cargo run', 'Up to +60% for an intact load']].map(([id, name, sub]) => (
+              <button key={id} className={mission === id ? 'on' : ''} onClick={() => { sfx.click(); setMission(id); }}>
+                <b>{name}</b><small>{sub}</small>
+              </button>
+            ))}
+          </div>
+          {open && rs && (
+            <button className="cta start" style={{ marginBottom: '0.5em' }} onClick={() => { sfx.go(); onDrive(t.id, rs.difficulty, undefined, { resume: true }); }}>
+              <strong>RESUME</strong><span>From checkpoint {rs.cp} &middot; {DIFFICULTY[rs.difficulty]?.name || 'Standard'}{rs.mission === 'cargo' ? ' · cargo run' : ''}</span>
+            </button>
+          )}
           {open
-            ? <button className="cta start" onClick={() => { sfx.go(); onDrive(t.id, diff); }}><strong>{rec?.done ? 'DRIVE AGAIN' : 'START'}</strong><span>10-15 minutes &middot; checkpoints save your place</span></button>
+            ? <button className="cta start" onClick={() => { sfx.go(); onDrive(t.id, diff, undefined, { mission }); }}><strong>{rs ? 'START OVER' : rec?.done ? 'DRIVE AGAIN' : 'START'}</strong><span>8-15 minutes &middot; every checkpoint saves your run</span></button>
             : <div className="locked-note">&#128274; Finish &ldquo;{TRACK_META[n - 2]?.name}&rdquo; to unlock this track.</div>}
         </section>
       </div>
@@ -198,8 +230,8 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
 }
 
 // ----------------------------------------------------------------- garage
-function Garage({ back, save }) {
-  const [idx, setIdx] = useState(Math.max(0, VEHICLES.findIndex((v) => v.id === save.selectedVehicle)));
+function Garage({ back, save, params, onTestDrive }) {
+  const [idx, setIdx] = useState(Math.max(0, VEHICLES.findIndex((v) => v.id === (params?.vehicle || save.selectedVehicle))));
   const [tab, setTab] = useState('upgrades');
   const spec = VEHICLES[idx];
   const owned = save.unlockedVehicles.includes(spec.id);
@@ -213,7 +245,18 @@ function Garage({ back, save }) {
       <TopBar title="Garage" onBack={back} save={save} />
       <div className="garage-grid">
         <section className="g-stage">
-          <GaragePreview vehicleId={spec.id} ups={ups} gear={gear} tire={tires.sel} locked={!owned} />
+          <div className="veh-selector-bar">
+            {VEHICLES.map((v, i) => (
+              <button
+                key={v.id}
+                className={`veh-pill ${i === idx ? 'active' : ''}`}
+                onClick={() => { sfx.click(); setIdx(i); }}
+              >
+                {v.name}
+              </button>
+            ))}
+          </div>
+          <GaragePreview vehicleId={spec.id} ups={ups} gear={gear} tire={tires.sel} paint={save.paint[spec.id].sel} locked={!owned} />
           <button className="arrow l" onClick={() => step(-1)} aria-label="Previous vehicle">&#8249;</button>
           <button className="arrow r" onClick={() => step(1)} aria-label="Next vehicle">&#8250;</button>
           <div className="g-name">
@@ -223,11 +266,16 @@ function Garage({ back, save }) {
               <span><b>{Math.round(P.clearance * 100)}</b>cm clear.</span><span><b>{Math.round(P.travel * 100)}</b>cm travel</span>
               <span><b>{Math.round(P.fuelCap)}</b>L</span>
             </div>
-            {!owned
-              ? <Btn kind={save.coins >= spec.price ? 'gold' : ''} disabled={save.coins < spec.price} onClick={() => buy(act((S) => S.buyVehicle(spec)))}>Buy &middot; {coins(spec.price)}</Btn>
-              : save.selectedVehicle === spec.id
-                ? <span className="pill on">Selected</span>
-                : <Btn kind="primary" onClick={() => act((S) => S.selectVehicle(spec.id))}>Select this truck</Btn>}
+            {!owned ? (
+              <div style={{ display: 'flex', gap: '0.6em', flexWrap: 'wrap' }}>
+                <Btn kind={save.coins >= spec.price ? 'gold' : ''} disabled={save.coins < spec.price} onClick={() => buy(act((S) => S.buyVehicle(spec)))}>Buy &middot; {coins(spec.price)}</Btn>
+                <Btn kind="ghost" onClick={() => onTestDrive(spec.id)} title={`One run on ${TRACK_META[0].name}, stock setup, no rewards`}>Test Drive</Btn>
+              </div>
+            ) : save.selectedVehicle === spec.id ? (
+              <span className="pill on">Selected</span>
+            ) : (
+              <Btn kind="primary" onClick={() => act((S) => S.selectVehicle(spec.id))}>Select this truck</Btn>
+            )}
           </div>
           <span className="hint">Drag to rotate</span>
         </section>
@@ -235,6 +283,7 @@ function Garage({ back, save }) {
           <div className="tabs">
             <button className={tab === 'upgrades' ? 'on' : ''} onClick={() => { sfx.click(); setTab('upgrades'); }}>Upgrades</button>
             <button className={tab === 'gear' ? 'on' : ''} onClick={() => { sfx.click(); setTab('gear'); }}>Tyres &amp; gear</button>
+            <button className={tab === 'paint' ? 'on' : ''} onClick={() => { sfx.click(); setTab('paint'); }}>Paint</button>
           </div>
           {!owned && <p className="empty">Buy this vehicle to equip it.</p>}
           {owned && tab === 'upgrades' && UPGRADE_KEYS.map((k) => {
@@ -245,6 +294,18 @@ function Garage({ back, save }) {
                   <i className="pips">{Array.from({ length: MAX_UPGRADE }, (_, p) => <u key={p} className={p < lv ? 'on' : ''} />)}</i></div>
                 {max ? <span className="pill on">Max</span>
                   : <Btn kind={save.coins >= cost ? 'gold' : ''} disabled={save.coins < cost} onClick={() => buy(act((S) => S.buyUpgrade(spec.id, k)))}>{coins(cost)}</Btn>}
+              </div>
+            );
+          })}
+          {owned && tab === 'paint' && PAINTS.map((p) => {
+            const pt = save.paint[spec.id], has = pt.owned.includes(p.id), on = pt.sel === p.id;
+            const sw = p.main !== undefined ? p.main : spec.colors.main;
+            return (
+              <div className="item" key={p.id}>
+                <div><b><span style={{ display: 'inline-block', width: '0.9em', height: '0.9em', borderRadius: '50%', marginRight: '0.5em', verticalAlign: '-0.08em', background: `#${sw.toString(16).padStart(6, '0')}`, border: '1px solid rgba(255,255,255,.5)' }} />{p.name}</b><small>{p.id === 'stock' ? 'The colour it left the factory in.' : 'Cosmetic. Applies to this vehicle.'}</small></div>
+                {on ? <span className="pill on">Applied</span>
+                  : has ? <Btn kind="primary" onClick={() => act((S) => S.selectPaint(spec.id, p.id))}>Apply</Btn>
+                    : <Btn kind={save.coins >= p.price ? 'gold' : ''} disabled={save.coins < p.price} onClick={() => buy(act((S) => S.buyPaint(spec.id, p.id, p.price)))}>{coins(p.price)}</Btn>}
               </div>
             );
           })}
@@ -346,7 +407,8 @@ function Settings({ back, save }) {
       <Backdrop region="forest" dim={0.86} />
       <TopBar title="Settings" onBack={back} save={save} />
       <div className="scroll narrow">
-        <Row label="Graphics quality" hint="Auto picks Medium on phones and High on desktop. Low turns off shadows and PBR." value={(s.quality || 'auto').toUpperCase()} onClick={() => cyc('quality', ['auto', 'low', 'medium', 'high'])} />
+        <Row label="Graphics quality" hint="Auto picks Medium on phones and High on desktop. Ultra enables 4K shadows, bloom and extended draw distance." value={(s.quality || 'auto').toUpperCase()} onClick={() => cyc('quality', ['auto', 'low', 'medium', 'high', 'ultra'])} />
+        <Row label="Steering control" hint="Buttons, an analog slider you drag left and right, or tilting the phone like a wheel. A gamepad always works." value={(s.steerMode || 'buttons').toUpperCase()} onClick={() => cyc('steerMode', ['buttons', 'slider', 'tilt'])} />
         <Row label="Steering speed" hint="How fast the wheels follow the steering buttons." value={sens < 0.9 ? 'SLOW' : sens > 1.2 ? 'FAST' : 'NORMAL'} onClick={() => cyc('steerSens', [0.7, 1, 1.35])} />
         <Row label="Camera shake" hint="Shake on rough ground and impacts." value={s.camShake === false ? 'OFF' : 'ON'} onClick={() => act((S) => S.setSetting('camShake', s.camShake === false))} />
         <Row label="Default difficulty" hint={DIFFICULTY[s.difficulty || 'standard'].desc} value={DIFFICULTY[s.difficulty || 'standard'].name.toUpperCase()} onClick={() => cyc('difficulty', ['casual', 'standard', 'hardcore'])} />
@@ -381,14 +443,16 @@ export default function App({ shell }) {
   useEffect(() => bus.on('back', () => { sfx.click(); back(); }), [back]);
   useEffect(() => bus.on('classic', (on) => setMode(on ? 'classic' : 'ui')), []);
 
-  const drive = useCallback((trackId, difficulty) => {
+  const drive = useCallback((trackId, difficulty, testVehicle, extra = {}) => {
     setMode('drive');
     launchDrive({
-      trackId, difficulty, audioCtx: shell.audioCtx(),
+      trackId, difficulty, testVehicle, audioCtx: shell.audioCtx(),
+      mission: extra.mission, resume: extra.resume ? save.resume : null,
       onExit: (action, id) => {
         const meta = TRACK_META.find((t) => t.id === id);
         const nextId = TRACK_META[TRACK_META.indexOf(meta) + 1]?.id;
-        if (action === 'retry') { setTimeout(() => drive(id, difficulty), 30); return; }
+        if (action === 'retry') { setTimeout(() => drive(id, difficulty, testVehicle, { mission: extra.mission || (extra.resume && save.resume ? save.resume.mission : undefined) }), 30); return; }
+        if (testVehicle) { setMode('ui'); setStack([{ name: 'home', params: {} }]); setRoute({ name: 'garage', params: { vehicle: testVehicle } }); return; }
         if (action === 'next' && nextId) { setTimeout(() => drive(nextId, difficulty), 30); return; }
         setMode('ui');
         if (action === 'garage') { setStack([{ name: 'home', params: {} }, { name: 'tracks', params: { region: meta.region, track: id } }]); setRoute({ name: 'garage', params: {} }); }
@@ -409,10 +473,10 @@ export default function App({ shell }) {
   const key = route.name + (route.params.region || '');
   return (
     <div className="ui" key={key}>
-      {route.name === 'home' && <Home {...p} />}
+      {route.name === 'home' && <Home {...p} onDrive={drive} />}
       {route.name === 'regions' && <Regions {...p} />}
       {route.name === 'tracks' && <Tracks {...p} onDrive={drive} />}
-      {route.name === 'garage' && <Garage {...p} />}
+      {route.name === 'garage' && <Garage {...p} onTestDrive={(id) => drive(TRACK_META[0].id, 'casual', id)} />}
       {route.name === 'profile' && <Profile {...p} />}
       {route.name === 'achievements' && <Achievements {...p} />}
       {route.name === 'settings' && <Settings {...p} />}

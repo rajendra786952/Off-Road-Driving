@@ -124,6 +124,10 @@
 /* garage */
 .garage-grid { flex: 1; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 1.1em; padding: 0.2em 1.8em 1.4em; min-height: 0; }
 .g-stage { position: relative; border-radius: 1.2em; overflow: hidden; background: radial-gradient(ellipse at 50% 62%, rgba(60, 80, 96, 0.5), rgba(8, 12, 15, 0.9) 70%); border: 1px solid var(--line); min-height: 0; }
+.veh-selector-bar { position: absolute; top: 0.8em; left: 0.8em; display: flex; gap: 0.4em; z-index: 3; flex-wrap: wrap; }
+.veh-pill { padding: 0.35em 0.8em; border-radius: 2em; font-size: 0.78em; font-weight: 700; letter-spacing: 0.05em; background: rgba(0, 0, 0, 0.45) !important; border: 1px solid var(--line) !important; color: var(--dim) !important; cursor: pointer; transition: all 0.2s ease; }
+.veh-pill:hover { background: rgba(255, 255, 255, 0.1) !important; color: var(--text) !important; }
+.veh-pill.active { background: rgba(255, 176, 32, 0.25) !important; border-color: var(--gold) !important; color: #fff !important; }
 .arrow { position: absolute; top: 38%; width: 2.6em; height: 4em; font-size: 1.5em !important; border-radius: 0.6em; background: rgba(0, 0, 0, 0.35) !important; border: 1px solid var(--line) !important; z-index: 2; }
 .arrow.l { left: 0.5em; } .arrow.r { right: 0.5em; }
 .g-name { position: absolute; left: 0; right: 0; bottom: 0; padding: 1em 1.2em; background: linear-gradient(180deg, transparent, rgba(6, 10, 13, 0.94) 45%); display: flex; flex-direction: column; gap: 0.45em; align-items: flex-start; z-index: 2; pointer-events: none; }

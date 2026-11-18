@@ -50,7 +50,7 @@ export class Vehicle4x4 {
       { lx: hx, lz: hz, front: true }, { lx: -hx, lz: hz, front: true },
       { lx: hx, lz: -hz, front: false }, { lx: -hx, lz: -hz, front: false }
     ].map((w) => ({
-      ...w, comp: 0, x: 0, grounded: false, omega: 0, spin: 0, slip: 0, dig: 0, load: 0,
+      ...w, comp: 0, x: 0, grounded: false, omega: 0, spin: 0, slip: 0, dig: 0, load: 0, flat: false,
       surface: world.offSurface, water: 0, fx: 0, wx: 0, wy: 0, wz: 0
     }));
 
@@ -147,15 +147,15 @@ export class Vehicle4x4 {
     let br = 0;
     const bp = clamp(inp.brake || 0, 0, 1);
     if (bp > 0) {
-      if (vF > 0.6 || th > 0.05) br = bp; else th = -bp;
+      if (vF > 0.4 || th > 0.05) br = bp; else th = -bp;
     }
     if (inp.noFuel) th = 0;
     this.throttle = th;
 
     // ---- steering (speed-sensitive lock, rate limited)
-    const maxSteer = 0.62 / (1 + Math.abs(vF) / 13);
+    const maxSteer = 0.65 / (1 + Math.abs(vF) / 15);
     const target = clamp(inp.steer || 0, -1, 1) * maxSteer;
-    const rate = 1.9 * dt;
+    const rate = 2.6 * dt;
     this.steer += clamp(target - this.steer, -rate, rate);
     const cs = Math.cos(this.steer), sn = Math.sin(this.steer);
 
@@ -276,6 +276,7 @@ export class Vehicle4x4 {
 
       let mu = surf.grip * tireGrip(P.tire, surf.name) * wGrip;
       if (water > 0.05) mu *= 0.85;
+      if (W.flat) mu *= 0.55;                       // a punctured tyre has little bite
       const N = Fs;
       const cap = mu * N;
 
@@ -308,7 +309,7 @@ export class Vehicle4x4 {
       // rolling resistance + soft-ground drag
       const slipV = W.omega * Rw - vLong;
       W.slip = slipV;
-      const rr = surf.roll * N * Math.tanh(vLong * 3);
+      const rr = (surf.roll + (W.flat ? 0.07 : 0)) * N * Math.tanh(vLong * 3);   // ...and drags
       const dragK = surf.drag * (sink / 0.15) + water * 900;
       const fLong = Fx - rr - dragK * vLong;
       const fLat = Fy - dragK * 0.6 * vLat;
@@ -320,7 +321,8 @@ export class Vehicle4x4 {
         const sa = Math.abs(slipV);
         if (sa > 1.2) W.dig = Math.min(surf.dig * P.digMult, W.dig + dt * 0.055 * Math.min(1, sa / 5));
       }
-      W.dig = Math.max(0, W.dig - dt * (0.02 + Math.abs(vLong) * 0.22));
+      // a dug-in wheel fills back slowly at rest (slower than it digs) and quickly once it rolls
+      W.dig = Math.max(0, W.dig - dt * (0.02 + Math.abs(vLong) * 0.3));
     }
 
     // ---- differential locks: both wheels of an axle turn together
@@ -352,11 +354,12 @@ export class Vehicle4x4 {
       const vn = vx * n[0] + vy * n[1] + vz * n[2];
       if (this.bodyPen[k] === 0 && vn < -1.2) this.impact = Math.max(this.impact, -vn);
       this.bodyPen[k] = pen;
-      const Fn = clamp(KB * pen - CB * vn, 0, P.mass * G * 4);
+      const Fn = clamp(KB * pen - CB * vn, 0, P.mass * G * 3);
       const tx = vx - n[0] * vn, ty = vy - n[1] * vn, tz = vz - n[2] * vn;
       const tv = Math.hypot(tx, ty, tz);
-      const mu = soft ? 0.42 : 0.6;
-      const fr = (mu * Fn) / (tv + 0.25) + (soft ? 2600 * Math.min(pen, 0.3) / 0.3 : 0);
+      const mu = soft ? 0.35 : 0.55;
+      // a belly resting in soft ground drags as well as slides
+      const fr = (mu * Fn) / (tv + 0.45) + (soft ? 2400 * Math.min(pen, 0.3) / 0.3 : 0);
       if (k >= 4 && k <= 8) this.bellyDrag = Math.max(this.bellyDrag, pen);
       this._addForce(n[0] * Fn - tx * fr, n[1] * Fn - ty * fr, n[2] * Fn - tz * fr, px, py, pz);
     }
@@ -366,7 +369,7 @@ export class Vehicle4x4 {
     for (let c = -1; c <= 1; c++) {
       const px = p[0] + fX * half * c, py = p[1] + fY * half * c, pz = p[2] + fZ * half * c;
       world.collidersNear(px, pz, (o) => {
-        if (py - 0.6 > o.y + (o.type === 'tree' ? 9 : o.r * 1.2)) return;
+        if (py - 0.6 > o.y + (o.h !== undefined ? o.h : o.type === 'tree' ? 9 : o.r * 1.2)) return;
         const dx = px - o.x, dz = pz - o.z;
         const d = Math.hypot(dx, dz) || 0.001;
         const pen = o.r + 0.92 - d;

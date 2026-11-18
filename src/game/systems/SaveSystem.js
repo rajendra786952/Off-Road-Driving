@@ -102,6 +102,24 @@ export const SaveSystem = {
     return true;
   },
 
+  buyPaint(vehicleId, paintId, price) {
+    const p = this.data.paint[vehicleId];
+    if (!this.isUnlocked(vehicleId) || !p || p.owned.includes(paintId) || this.data.coins < price) return false;
+    this.data.coins -= price;
+    p.owned.push(paintId);
+    p.sel = paintId;
+    this.persist();
+    return true;
+  },
+
+  selectPaint(vehicleId, paintId) {
+    const p = this.data.paint[vehicleId];
+    if (!p || !p.owned.includes(paintId)) return false;
+    p.sel = paintId;
+    this.persist();
+    return true;
+  },
+
   selectTire(vehicleId, tireId) {
     const t = this.data.tires[vehicleId];
     if (!t || !t.owned.includes(tireId)) return false;

@@ -7,5 +7,7 @@ export const REGIONS = [
   { id: 'snow', n: 5, name: 'Extreme Expedition', level: 'Extreme', color: '#7fb6e6', desc: 'Snow, ice and blizzards on the way to the summit. Studded tyres strongly advised.' },
   { id: 'desert', n: 6, name: 'Desert Storm', level: 'Advanced', color: '#e3b04b', desc: 'Sand seas, rocky passes, sandstorms and heat that cooks a hard-worked engine.' },
   { id: 'jungle', n: 7, name: 'Jungle Expedition', level: 'Expert', color: '#2bb673', desc: 'Tropical jungle: waterfalls, flooded rivers, red mud and trails one truck wide.' },
-  { id: 'volcano', n: 8, name: 'Volcanic Wasteland', level: 'Extreme', color: '#ff5a2c', desc: 'Ash plains, razor rock and lava fields on the climb to a live crater.' }
+  { id: 'volcano', n: 8, name: 'Volcanic Wasteland', level: 'Extreme', color: '#ff5a2c', desc: 'Ash plains, razor rock and lava fields on the climb to a live crater.' },
+  // open: true = playable from the first launch, outside the expedition unlock chain
+  { id: 'tour', n: 9, name: 'Grand Tour', level: 'Open', color: '#b98cf0', open: true, desc: 'Five stand-alone tracks, one per landscape: forest, desert, mountain, swamp and snow. Open from the start.' }
 ];

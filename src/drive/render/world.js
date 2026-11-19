@@ -4,9 +4,10 @@
 import * as THREE from 'three';
 import { CHUNK, CW } from '../core/track.js';
 import { noise2, smoothstep } from '../core/noise.js';
+import { SURFACE_LIST } from '../core/surfaces.js';
 import { mergeColored, M } from './geo.js';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
-import { Sky, sunElevation } from './sky.js';
+import { Sky, sunElevation, ENABLE_SKYBOX } from './sky.js';
 import { Scenery } from './scenery.js';
 import { treeAtlas, treeGeometries } from './trees.js';
 
@@ -16,9 +17,30 @@ const key2 = (a, b) => (a + 32768) * 65536 + (b + 32768);
 const GROUND_LAYERS = ['grass', 'dirt', 'mud', 'rock', 'gravel', 'sand', 'snow', 'forest'];
 const LAYER_OF = {
   grass: 0, dirt: 1, wood: 1, mud: 2, deepmud: 2, bog: 2, rock: 3, wetrock: 3, lavarock: 3, lava: 3,
-  gravel: 4, scree: 4, riverbed: 4, ash: 4, sand: 5, deepsand: 5, snow: 6, deepsnow: 6, ice: 6
+  gravel: 4, scree: 4, riverbed: 4, ash: 4, sand: 5, deepsand: 5, snow: 6, deepsnow: 6, ice: 6, asphalt: 3
 };
+
+/** Building facade: a 4 x 4 grid of windows (one tile = 13.6 m of wall) and the same grid with some of them lit. */
+function facadeTextures() {
+  const mk = (lit) => {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = lit ? '#000' : '#d6d2c8'; g.fillRect(0, 0, 128, 128);
+    let seed = 11;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
+      const x = i * 32 + 8, y = j * 32 + 7, on = rnd() < 0.42;
+      if (lit) { if (on) { g.fillStyle = rnd() < 0.5 ? '#ffd98a' : '#fff2c4'; g.fillRect(x, y, 17, 17); } }
+      else { g.fillStyle = '#2a3a4c'; g.fillRect(x, y, 17, 17); g.fillStyle = '#4f6a84'; g.fillRect(x, y, 17, 5); g.fillStyle = '#b9b5ab'; g.fillRect(x - 1, y + 17, 19, 2); }
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+    return t;
+  };
+  return { map: mk(false), lit: mk(true) };
+}
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const LAYER_OF_NAME = SURFACE_LIST.map((s) => s.name);      // surface id -> name
 
 /**
  * Tiling ground detail (linear data, mean ~0.82): soft mottling at three frequencies plus
@@ -211,17 +233,38 @@ export class World {
     this.tmpC = new THREE.Color();
     this.up = new THREE.Vector3(0, 1, 0);
     this.c = { top: new THREE.Color(), hor: new THREE.Color(), fog: new THREE.Color(), sunCol: new THREE.Color(), cloud: new THREE.Color(), light: new THREE.Color(), sunDir: new THREE.Vector3() };
+    this.skyboxEnabled = ENABLE_SKYBOX;
   }
 
   keep(o) { this.disposables.push(o); return o; }
 
+  /** Dynamic toggle to enable or disable the 3D skybox at runtime */
+  setSkyboxEnabled(enabled) {
+    this.skyboxEnabled = !!enabled;
+    if (this.sky) {
+      this.sky.setVisible(this.skyboxEnabled);
+      if (this.skyboxEnabled && this.hdrTex && this.env.hdrSky !== false && !this.sky.hdrMap) {
+        const rot = (this.hdrRot || 0) / (Math.PI * 2);
+        this.sky.setHdr(this.hdrTex, rot);
+      }
+    }
+  }
+
   init(session) {
     const env = this.env, scene = this.scene, pbr = this.q.pbr;
     this.sunAz = ((this.track.seed * 37) % 360) * Math.PI / 180;
-    scene.fog = new THREE.Fog(0xffffff, 40, 200);
-    scene.background = new THREE.Color();
+    const initFog = new THREE.Color(env.fog ? (Math.round(env.fog[0] * 255) << 16 | Math.round(env.fog[1] * 255) << 8 | Math.round(env.fog[2] * 255)) : 0x9fb8a8);
+    scene.fog = env.fogExp
+      ? new THREE.FogExp2(initFog, env.fogDensity || 0.0078)
+      : new THREE.Fog(initFog, 20, env.fogFar || 240);
+    scene.background = initFog.clone();
 
     this.sky = new Sky(env, this.q.name, this.track.seed);
+    this.setSkyboxEnabled(this.skyboxEnabled);
+    if (this.track && this.track.meta) {
+      this.sky.mesh.position.set(this.track.meta.startX || 0, this.track.meta.startY || 0, this.track.meta.startZ || 0);
+      this.sky.ring.position.set(this.track.meta.startX || 0, (this.track.meta.startY || 0) - 30, this.track.meta.startZ || 0);
+    }
     scene.add(this.sky.mesh, this.sky.ring);
 
     this.hemi = new THREE.HemisphereLight(0xffffff, new THREE.Color(env.grass[0] * 0.7, env.grass[1] * 0.7, env.grass[2] * 0.7), 1);
@@ -280,9 +323,10 @@ export class World {
     this.rockMat = pbr ? this.keep(rockPatch(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, envMapIntensity: 0.25 }), this.ground)) : this.propMat;
     this._buildPropTemplates();
     this._buildStatics(session);
+    if (this.track.biomes) this._buildWorldExtras();
     this._buildPrecip();
     this.scenery = new Scenery(this.track, this.q, scene);
-    if (pbr && env.hdr) this._loadHdr(env.hdr);
+    if (pbr && env.hdr && this.skyboxEnabled) this._loadHdr(env.hdr);
     if (pbr) this._loadGround(aniso);
     this.setAtmosphere(session.weather, session.hour, 0);
   }
@@ -353,7 +397,7 @@ export class World {
       }
       const rot = bu - (this.sunAz / (Math.PI * 2) + 0.5);
       this.hdrTex = tex;
-      if (this.env.hdrSky !== false) this.sky.setHdr(tex, rot);
+      if (this.env.hdrSky !== false && this.skyboxEnabled) this.sky.setHdr(tex, rot);
       // lighting and reflections from the same photo
       const pm = new THREE.PMREMGenerator(this.renderer);
       const rt = pm.fromEquirectangular(tex);
@@ -369,6 +413,7 @@ export class World {
   }
 
   /** Register a glossy material that should reflect the photographic sky once it has loaded. */
+  /** Register a glossy material (materials reflect scene.environment). */
   useHdrOn(m) {
     if (!m || !m.isMeshStandardMaterial) return;
     const e = { m, base: m.envMapIntensity };
@@ -408,24 +453,33 @@ export class World {
     if (w.dust > 0) { c.top.lerp(this.tmpC.setRGB(0.74, 0.58, 0.36).multiplyScalar(0.3 + 0.7 * day), w.dust * 0.8); c.hor.lerp(this.tmpC.setRGB(0.82, 0.66, 0.42).multiplyScalar(0.3 + 0.7 * day), w.dust * 0.85); }
     if (w.ash > 0) { c.top.lerp(this.tmpC.setRGB(0.1, 0.08, 0.08), w.ash * 0.75); c.hor.lerp(this.tmpC.setRGB(0.3, 0.16, 0.1), w.ash * 0.6); }
 
-    c.fog.copy(c.hor).lerp(this.tmpC.setRGB(env.fog[0], env.fog[1], env.fog[2]).multiplyScalar(0.08 + 0.92 * day), 0.35 * (1 - w.dust) * (1 - w.ash));
+    c.fog.copy(c.hor).lerp(this.tmpC.setRGB(env.fog[0], env.fog[1], env.fog[2]).multiplyScalar(0.08 + 0.92 * day), 0.45 * (1 - w.dust) * (1 - w.ash));
     c.fog.multiplyScalar(1 - gloom * 0.38);
     this.scene.fog.color.copy(c.fog);
     this.scene.background.copy(c.fog);
-    const far = Math.min(this.q.radius * 0.97, env.fogFar * w.fog * (0.7 + 0.3 * day));
-    this.scene.fog.near = far * 0.3; this.scene.fog.far = far;
-    this.fogFar = far;
+    if (this.scene.fog.isFogExp2) {
+      const baseD = (env.fogDensity || 0.0078) * (1.1 - 0.2 * day);
+      this.scene.fog.density = baseD / Math.max(0.25, w.fog);
+      this.fogFar = 3.0 / Math.max(0.001, this.scene.fog.density);
+    } else {
+      const far = Math.min(this.q.radius * 0.97, env.fogFar * w.fog * (0.7 + 0.3 * day));
+      this.scene.fog.near = far * 0.3; this.scene.fog.far = far;
+      this.fogFar = far;
+    }
 
     // sun by day, a dim blue moon by night
     const elv = Math.max(el, 0.08);
     if (day > 0.02) c.sunDir.set(Math.cos(this.sunAz) * Math.cos(elv * 1.3), Math.sin(elv * 1.3), Math.sin(this.sunAz) * Math.cos(elv * 1.3)).normalize();
     else c.sunDir.set(Math.cos(this.sunAz + 2) * 0.6, 0.75, Math.sin(this.sunAz + 2) * 0.6).normalize();
-    c.sunCol.setRGB(env.sun[0], env.sun[1], env.sun[2]).lerp(this.tmpC.setRGB(1.0, 0.55, 0.28), low * 0.75);
+    c.sunCol.setRGB(env.sun[0], env.sun[1], env.sun[2]).lerp(this.tmpC.setRGB(1.0, 0.65, 0.35), low * 0.7);
     this.sun.color.copy(c.sunCol).lerp(this.tmpC.setRGB(0.45, 0.55, 0.9), 1 - day);
-    this.sun.intensity = 2.3 * day * clamp(1 - gloom * 1.15, 0.12, 1) * (1 - 0.5 * w.dust) * (1 - 0.4 * w.ash) + 0.3 * (1 - day);
+    this.sun.intensity = 2.6 * day * clamp(1 - gloom * 1.15, 0.12, 1) * (1 - 0.5 * w.dust) * (1 - 0.4 * w.ash) + 0.3 * (1 - day);
     this.hemi.color.copy(c.top).lerp(c.hor, 0.5).lerp(this.tmpC.setRGB(1, 1, 1), 0.35);
     this.hemi.intensity = env.ambient * (0.18 + 0.95 * day) * (1 + gloom * 0.25);
     this.scene.environmentIntensity = (0.12 + 0.7 * day) * (1 - gloom * 0.3);
+    this._sunI = this.sun.intensity; this._hemiI = this.hemi.intensity; this._envI = this.scene.environmentIntensity;
+    if (this.bldMat) this.bldMat.emissiveIntensity = clamp((1 - day) * 1.3 + gloom * 0.25, 0, 1.1);
+    if (this.oceanMat) this.oceanMat.color.copy(this.oceanCol).multiplyScalar(0.18 + 0.82 * day).lerp(c.hor, 0.18);
     this._hdrLevel();
 
     // wet ground shines
@@ -479,10 +533,10 @@ export class World {
     const tr = env.trunk, f1 = env.foliage, f2 = env.foliage2, snowy = kind === 'snowpine';
     const geos = {
       pine: () => mergeColored([
-        { geo: new THREE.CylinderGeometry(0.16, 0.26, 2.4, 5), matrix: M(0, 1.2, 0), color: tr },
-        { geo: new THREE.ConeGeometry(1.9, 3.2, 7), matrix: M(0, 3.2, 0), color: f1, shade: [1.6, 4.8] },
-        { geo: new THREE.ConeGeometry(1.45, 2.8, 7), matrix: M(0, 5.0, 0, 1, 1, 1, 0, 0.5, 0), color: snowy ? f2 : f1, shade: [3.6, 6.4] },
-        { geo: new THREE.ConeGeometry(0.95, 2.4, 6), matrix: M(0, 6.7, 0), color: snowy ? f2 : f1, shade: [5.5, 7.9] }
+        { geo: new THREE.CylinderGeometry(0.22, 0.42, 2.8, 8), matrix: M(0, 1.4, 0), color: tr },
+        { geo: new THREE.ConeGeometry(2.1, 3.0, 9), matrix: M(0, 3.3, 0), color: f1, shade: [1.6, 4.8] },
+        { geo: new THREE.ConeGeometry(1.65, 2.7, 9), matrix: M(0, 4.9, 0, 1, 1, 1, 0, 0.4, 0), color: snowy ? f2 : f1, shade: [3.4, 6.2] },
+        { geo: new THREE.ConeGeometry(1.15, 2.3, 8), matrix: M(0, 6.3, 0, 1, 1, 1, 0, 0.8, 0), color: snowy ? f2 : f1, shade: [5.1, 7.5] }
       ]),
       broad: () => mergeColored([
         { geo: new THREE.CylinderGeometry(0.2, 0.32, 3.2, 5), matrix: M(0, 1.6, 0), color: tr },
@@ -529,12 +583,12 @@ export class World {
       const n = Math.ceil(cap / used.length) + 200;
       if (tex && tex[k]) {
         this.inst[k] = mk(tex[k].trunk, n, false, this.barkMat[tex[k].bark]);
-        const fol = mk(tex[k].fol, n, false, this.leafMat);
+        const fol = mk(tex[k].fol, n, true, this.leafMat);
         fol.instanceMatrix = this.inst[k].instanceMatrix;
         fol.customDepthMaterial = this.leafDepth;
         if (env.trees > 0.7) fol.castShadow = false;      // a closed canopy shades everything anyway: skip thousands of shadow cards
         this.fol[k] = fol;
-      } else this.inst[k] = mk(geos[k](), n);
+      } else this.inst[k] = mk(geos[k](), n, true);
     }
     if (tex) for (const k of ['pine', 'broad', 'jungle', 'palm']) if (!used.includes(k)) { tex[k].trunk.dispose(); tex[k].fol.dispose(); }
     // far LOD: one very cheap silhouette for trees beyond the near ring
@@ -620,7 +674,8 @@ export class World {
     const k = cx0 + ',' + cz0;
     if (k === this.propKey) return;
     this.propKey = k;
-    const env = this.env, kinds = this.treeKinds;
+    const env0 = this.env, kinds0 = this.treeKinds, B = this.track.biomes;
+    if (B && !this.bKinds) this.bKinds = B.map((e) => { const k = (e.kinds || []).filter((n) => this.inst[n]); return k.length ? k : kinds0; });
     const counts = {};
     for (const n in this.inst) counts[n] = 0;
     const put = (name, p, sy = 1, col) => {
@@ -631,7 +686,7 @@ export class World {
       this.tmpV.set(p.x, p.y - 0.1, p.z);
       this.tmpS.set(p.scale, p.scale * sy, p.scale);
       im.setMatrixAt(i, this.tmpM.compose(this.tmpV, this.tmpQ, this.tmpS));
-      if (col) im.instanceColor.setXYZ(i, col[0], col[1], col[2]);
+      if (col && im.instanceColor) im.instanceColor.setXYZ(i, col[0], col[1], col[2]);
       counts[name] = i + 1;
     };
     for (let cz = cz0 - R; cz <= cz0 + R; cz++) {
@@ -640,14 +695,52 @@ export class World {
         const near = Math.max(Math.abs(cx - cx0), Math.abs(cz - cz0)) <= this.q.propNear;
         for (const p of this.track.propsFor(cx, cz)) {
           if (p.type === 'tree') {
-            if (near) put(kinds[Math.min(kinds.length - 1, Math.floor(p.v * kinds.length * (kinds.length > 1 ? 1.35 : 1)) % kinds.length)], p, 0.9 + p.v * 0.4);
-            else put('far', p, 0.9 + p.v * 0.4, p.v > 0.5 ? env.foliage : env.foliage2);
+            const env = B ? B[p.b] : env0, kinds = B ? this.bKinds[p.b] : kinds0;
+            const kindIdx = Math.min(kinds.length - 1, Math.floor(p.v * kinds.length * (kinds.length > 1 ? 1.35 : 1)) % kinds.length);
+            const tk = kinds[kindIdx];
+            let col = null;
+            if (env.foliagePalette && env.foliagePalette.length) {
+              const palIdx = Math.floor(p.v * env.foliagePalette.length * 3.7) % env.foliagePalette.length;
+              col = env.foliagePalette[palIdx];
+            } else {
+              col = p.v > 0.5 ? env.foliage : env.foliage2;
+            }
+            if (near) {
+              put(tk, p, 0.9 + p.v * 0.4, col);
+              if (this.fol[tk] && this.fol[tk].instanceColor) {
+                const idx = counts[tk] - 1;
+                if (idx >= 0 && idx < this.fol[tk].instanceColor.count) {
+                  this.fol[tk].instanceColor.setXYZ(idx, col[0], col[1], col[2]);
+                }
+              }
+            } else {
+              put('far', p, 0.9 + p.v * 0.4, col);
+            }
           } else if (p.type === 'boulder') put('boulder', { ...p, y: p.y + p.scale * 0.25 }, 0.75);
           else if (p.type === 'bush' && (near || p.v > 0.5)) put('bush', p);
+          else if (p.type === 'building') this._putBuilding(p, counts);
         }
       }
     }
-    for (const k in this.fol) this.fol[k].count = counts[k];
+    // open world: buildings are drawn much further out than trees, so a skyline shows from the coast road
+    if (B && this.inst.bld) {
+      const Rb = Math.ceil(this.q.radius / CHUNK);
+      for (let cz = cz0 - Rb; cz <= cz0 + Rb; cz++) {
+        for (let cx = cx0 - Rb; cx <= cx0 + Rb; cx++) {
+          if (Math.abs(cx - cx0) <= R && Math.abs(cz - cz0) <= R) continue;
+          const ch = this.track.chunks.get(key2(cx, cz));
+          if (!ch) continue;
+          // only where a town is: the chunk's own biome sample says so without building its props
+          const mid = 17 * CW + 17;
+          if (!B[ch.bio[mid]].urban && !B[ch.bio2[mid]].urban) continue;
+          for (const p of this.track.propsFor(cx, cz)) if (p.type === 'building') this._putBuilding(p, counts);
+        }
+      }
+    }
+    for (const k in this.fol) {
+      this.fol[k].count = counts[k];
+      if (this.fol[k].instanceColor) this.fol[k].instanceColor.needsUpdate = true;
+    }
     for (const name in counts) {
       const im = this.inst[name];
       im.count = counts[name];
@@ -655,6 +748,146 @@ export class World {
       if (im.instanceColor) im.instanceColor.needsUpdate = true;
     }
   }
+
+  /** One building: a box with the facade texture (scaled per instance in the shader), plus a roof for houses. */
+  _putBuilding(p, counts) {
+    const im = this.inst.bld, i = counts.bld;
+    if (i >= im.instanceMatrix.count) return;
+    this.tmpQ.setFromAxisAngle(this.up, p.rot);
+    im.setMatrixAt(i, this.tmpM.compose(this.tmpV.set(p.x, p.y + p.h / 2, p.z), this.tmpQ, this.tmpS.set(p.w, p.h, p.d)));
+    const v = p.v, c = this.tmpC;
+    if (p.kind === 'tower') c.setRGB(0.62 + 0.3 * v, 0.66 + 0.26 * v, 0.72 + 0.22 * ((v * 7) % 1));
+    else if (p.kind === 'shed') c.setRGB(0.5 + 0.2 * v, 0.5 + 0.16 * v, 0.5 + 0.1 * v);
+    else c.setRGB(0.95, 0.86 - 0.2 * v, 0.7 - 0.25 * ((v * 5) % 1));                    // painted village houses
+    im.instanceColor.setXYZ(i, c.r, c.g, c.b);
+    counts.bld = i + 1;
+    if (p.kind !== 'tower') {
+      const rm = this.inst.roof, k = counts.roof;
+      if (k >= rm.instanceMatrix.count) return;
+      const rh = p.kind === 'shed' ? 1.4 : 2.4;
+      rm.setMatrixAt(k, this.tmpM.compose(this.tmpV.set(p.x, p.y + p.h + rh / 2, p.z), this.tmpQ, this.tmpS.set(p.w + 0.8, rh, p.d + 0.8)));
+      if (p.kind === 'shed') c.setRGB(0.42, 0.44, 0.47); else c.setRGB(0.62 - 0.2 * v, 0.26, 0.18);
+      rm.instanceColor.setXYZ(k, c.r, c.g, c.b);
+      counts.roof = k + 1;
+    }
+  }
+
+  /** Extras for tracks with areas: building meshes, the sea, tunnel roofs, landmarks, road markings. */
+  _buildWorldExtras() {
+    const tr = this.track, scene = this.scene, env = this.env;
+    // ---- buildings
+    const tex = facadeTextures();
+    this.keep(tex.map); this.keep(tex.lit);
+    this.bldMat = this.keep(this.q.pbr
+      ? new THREE.MeshStandardMaterial({ map: tex.map, emissiveMap: tex.lit, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.72, metalness: 0.08, envMapIntensity: 0.5 })
+      : new THREE.MeshLambertMaterial({ map: tex.map, emissiveMap: tex.lit, emissive: 0xffffff, emissiveIntensity: 0 }));
+    this.bldMat.onBeforeCompile = (sh) => {
+      // repeat the facade by the instance's real size (one tile = 13.6 m); roofs get the plain wall texel
+      sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', [
+        '#include <uv_vertex>',
+        '#ifdef USE_INSTANCING',
+        '  vec3 isc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));',
+        '  vec2 fsc = abs(normal.y) > 0.5 ? vec2(0.0) : vec2((abs(normal.x) > 0.5 ? isc.z : isc.x) / 13.6, isc.y / 13.6);',
+        '  #ifdef USE_MAP',
+        '    vMapUv = uv * fsc;',
+        '  #endif',
+        '  #ifdef USE_EMISSIVEMAP',
+        '    vEmissiveMapUv = uv * fsc;',
+        '  #endif',
+        '#endif'
+      ].join('\n'));
+    };
+    const nB = this.q.name === 'low' ? 260 : 700;
+    const mk = (geo, mat) => {
+      const im = new THREE.InstancedMesh(this.keep(geo), mat, nB);
+      im.count = 0; im.frustumCulled = false; im.castShadow = !!this.q.shadows; im.receiveShadow = true;
+      im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(nB * 3).fill(1), 3);
+      scene.add(im);
+      return im;
+    };
+    this.inst.bld = mk(new THREE.BoxGeometry(1, 1, 1), this.bldMat);
+    this.inst.roof = mk(mergeColored([{ geo: new THREE.ConeGeometry(0.7071, 1, 4), matrix: M(0, 0, 0, 1, 1, 1, 0, Math.PI / 4, 0), color: [1, 1, 1] }]), this.propMat);
+
+    // ---- the sea: one big sheet that follows the camera (only on tracks that have a coast)
+    if (tr.seaLevel !== undefined) {
+    this.oceanCol = new THREE.Color(0.05, 0.34, 0.4);
+    this.oceanNormal = this.keep(normalTexture(128, 5, 1.6, 33));
+    this.oceanNormal.repeat.set(220, 220);
+    this.oceanMat = this.keep(this.q.pbr
+      ? new THREE.MeshStandardMaterial({ color: this.oceanCol.clone(), roughness: 0.08, metalness: 0.3, transparent: true, opacity: 0.84, depthWrite: false, normalMap: this.oceanNormal, normalScale: new THREE.Vector2(0.5, 0.5), envMapIntensity: 2.0 })
+      : new THREE.MeshLambertMaterial({ color: this.oceanCol.clone(), transparent: true, opacity: 0.8, depthWrite: false }));
+    this.useHdrOn(this.oceanMat);
+    this.ocean = new THREE.Mesh(this.keep(new THREE.PlaneGeometry(2600, 2600)), this.oceanMat);
+    this.ocean.rotation.x = -Math.PI / 2;
+    this.ocean.position.y = tr.seaLevel;
+    this.ocean.renderOrder = 2;
+    scene.add(this.ocean);
+    }
+
+    const parts = [];
+    const rockA = [0.3, 0.28, 0.26], rockB = [0.22, 0.2, 0.19];      // the tunnel is cut through grey summit rock
+    const yawAt = (i) => Math.atan2(tr.TX[i], tr.TZ[i]);
+    // ---- tunnel: a rock roof over the cutting, heavier portals at both ends
+    for (const t of tr.tunnels) {
+      for (let i = t.i0; i <= t.i1; i += 2) {
+        const hw = tr.HW[i], end = i === t.i0 || i + 2 > t.i1;
+        const w = 2 * (hw + (end ? 10 : 7.5)), th = end ? 6 : 3.4;
+        parts.push({ geo: new THREE.BoxGeometry(w, th, 4.4), matrix: M(tr.PX[i], tr.PY[i] + 5.6 + th / 2 + 0.5 * Math.sin(i * 1.7), tr.PZ[i], 1, 1, 1, 0, yawAt(i), 0), color: (i / 2) % 2 ? rockA : rockB });
+        // ribs down the walls so the inside reads as a bore, not a box
+        if ((i - t.i0) % 6 === 0) for (const sd of [-1, 1]) {
+          parts.push({ geo: new THREE.BoxGeometry(1.1, 6.4, 1.2), matrix: M(tr.PX[i] + tr.TZ[i] * sd * (hw + 1.3), tr.PY[i] + 2.9, tr.PZ[i] - tr.TX[i] * sd * (hw + 1.3), 1, 1, 1, 0, yawAt(i), sd * 0.16), color: rockB });
+        }
+      }
+    }
+    // ---- lane markings on the asphalt (the road profile is exact there, so no terrain lookups are needed)
+    const paint = [1.0, 0.9, 0.45];
+    for (let c = 0; c < tr.chainStart.length; c++) {
+      for (let i = tr.chainStart[c] + 3; i < tr.chainEnd[c] - 2; i += 4) {
+        if (LAYER_OF_NAME[tr.SURF[i]] !== 'asphalt' || tr.HW[i] < 3.6) continue;
+        parts.push({ geo: new THREE.BoxGeometry(0.16, 0.03, 2.4), matrix: M(tr.PX[i], tr.PY[i] + 0.035, tr.PZ[i], 1, 1, 1, 0, yawAt(i), 0), color: paint });
+      }
+    }
+    // ---- landmarks: service stations, the lighthouse, signposts
+    const beamGeo = this.keep(new THREE.CylinderGeometry(0.4, 0.4, 60, 8, 1, true));
+    const beamMat = this.keep(new THREE.MeshBasicMaterial({ color: 0x7fe3ff, transparent: true, opacity: 0.24, depthWrite: false, fog: false }));
+    this.landmarkBeams = tr.landmarks.map((l) => {
+      const y = tr.heightAt(l.x, l.z), rot = l.heading || 0;
+      const at = (lx, ly, lz, rx = 0, ry = 0, rz = 0) => M(l.x + lx * Math.cos(rot) + lz * Math.sin(rot), y + ly, l.z - lx * Math.sin(rot) + lz * Math.cos(rot), 1, 1, 1, rx, rot + ry, rz);
+      if (l.kind === 'fuel') {
+        for (const [px, pz] of [[-2.6, -1.8], [2.6, -1.8], [-2.6, 1.8], [2.6, 1.8]]) parts.push({ geo: new THREE.CylinderGeometry(0.12, 0.12, 3.8, 6), matrix: at(px, 1.9, pz), color: [0.85, 0.85, 0.88] });
+        parts.push({ geo: new THREE.BoxGeometry(6.4, 0.35, 4.6), matrix: at(0, 3.95, 0), color: [0.9, 0.2, 0.12] });
+        parts.push({ geo: new THREE.BoxGeometry(6.0, 0.12, 4.2), matrix: at(0, 3.72, 0), color: [0.95, 0.95, 0.95] });
+        for (const px of [-1.1, 1.1]) parts.push({ geo: new THREE.BoxGeometry(0.6, 1.5, 0.45), matrix: at(px, 0.75, 0), color: [0.9, 0.75, 0.1] });
+        parts.push({ geo: new THREE.CylinderGeometry(0.1, 0.1, 7, 6), matrix: at(4.2, 3.5, 0), color: [0.8, 0.8, 0.82] });
+        parts.push({ geo: new THREE.BoxGeometry(1.8, 1.2, 0.2), matrix: at(4.2, 6.6, 0), color: [0.9, 0.2, 0.12] });
+        return null;
+      }
+      if (l.id === 'lighthouse') {
+        for (let k = 0; k < 5; k++) parts.push({ geo: new THREE.CylinderGeometry(1.5 - k * 0.14, 1.64 - k * 0.14, 3.4, 12), matrix: M(l.x, y + 1.7 + k * 3.4, l.z), color: k % 2 ? [0.82, 0.16, 0.12] : [0.95, 0.95, 0.93] });
+        parts.push({ geo: new THREE.CylinderGeometry(1.3, 1.3, 0.3, 12), matrix: M(l.x, y + 17.1, l.z), color: [0.2, 0.2, 0.22] });
+        parts.push({ geo: new THREE.ConeGeometry(1.2, 1.6, 10), matrix: M(l.x, y + 19.6, l.z), color: [0.82, 0.16, 0.12] });
+        const lamp = new THREE.Mesh(this.keep(new THREE.SphereGeometry(0.8, 10, 8)), this.keep(new THREE.MeshBasicMaterial({ color: 0xfff1b0, fog: false })));
+        lamp.position.set(l.x, y + 18.1, l.z);
+        scene.add(lamp);
+      } else {
+        // a signpost
+        parts.push({ geo: new THREE.CylinderGeometry(0.09, 0.11, 3.6, 6), matrix: at(0, 1.8, 0), color: [0.5, 0.36, 0.2] });
+        parts.push({ geo: new THREE.BoxGeometry(2.2, 0.7, 0.12), matrix: at(0, 3.3, 0), color: [0.12, 0.42, 0.55] });
+      }
+      const beam = new THREE.Mesh(beamGeo, beamMat);
+      beam.position.set(l.x, y + 30, l.z);
+      scene.add(beam);
+      return beam;
+    });
+    if (parts.length) {
+      const m = new THREE.Mesh(this.keep(mergeColored(parts)), this.propMat);
+      m.castShadow = !!this.q.shadows; m.receiveShadow = true;
+      scene.add(m);
+    }
+  }
+
+  /** Free roam: a landmark has been found, or was found on an earlier visit. */
+  hideLandmark(i) { const b = this.landmarkBeams && this.landmarkBeams[i]; if (b) b.visible = false; }
 
   // ---------------------------------------------------------------- statics
   _buildStatics(session) {
@@ -719,7 +952,19 @@ export class World {
       const nPl = Math.round(b.len / 0.6);
       for (let i = 0; i < nPl; i++) {
         const z = -b.len / 2 + (i + 0.5) * (b.len / nPl);
+        // missing planks (generated obstacle layer): only the part of the plank that is still there
+        const u = (i + 0.5) / nPl, gap = b.gaps && b.gaps.find((g) => u > g.t0 - 0.3 / b.len && u < g.t1 + 0.3 / b.len);
+        if (gap) {
+          const w = b.half + gap.d0;
+          parts.push({ geo: new THREE.BoxGeometry(w, 0.14, b.len / nPl - 0.06), matrix: local(M(gap.side * (gap.d0 - b.half) / 2, -0.07, z)), color: cB });
+          continue;
+        }
         parts.push({ geo: new THREE.BoxGeometry(b.half * 2, 0.14, b.len / nPl - 0.06), matrix: local(M(0, -0.07, z)), color: i % 3 ? cA : cB });
+      }
+      // a snapped plank hanging in each hole
+      for (const g of b.gaps || []) {
+        const z = -b.len / 2 + ((g.t0 + g.t1) / 2) * b.len;
+        parts.push({ geo: new THREE.BoxGeometry((b.half - g.d0) * 0.8, 0.12, 0.5), matrix: local(M(g.side * (b.half + g.d0) / 2, -0.42, z, 1, 1, 1, 0, 0, g.side * 0.75)), color: cB });
       }
       for (const sx of [-1, 1]) {
         parts.push({ geo: new THREE.BoxGeometry(0.22, 0.34, b.len + 1), matrix: local(M(sx * (b.half - 0.2), -0.3, 0)), color: cB });
@@ -863,6 +1108,12 @@ export class World {
     const snowy = env.off === 'deepsnow';
     const extra = tr.water.length > 0 || tr.sidePatches;
     const alb = env.albedo || 1;   // very bright ground (sand, snow) is toned down so it does not clip
+    const B = tr.biomes, sea = tr.seaLevel;
+    let litter = 0;
+    const addLayer = (E, w) => {
+      if (E.off === 'grass') { const ff = Math.min(1, E.trees * 1.5) * litter; lw[0] += w * (1 - ff); lw[7] += w * ff; }
+      else lw[LAYER_OF[E.off] ?? 0] += w;
+    };
     for (let j = 0; j < nv; j++) {
       for (let i = 0; i < nv; i++) {
         const q = (j * st + 1) * CW + i * st + 1;
@@ -876,12 +1127,35 @@ export class World {
         uv[k * 2] = x / 5; uv[k * 2 + 1] = z / 5;
         const nz1 = noise2(x / 23, z / 23, 9) * 0.5 + 0.5;
         const nz2 = 0.9 + 0.2 * noise2(x / 3.1, z / 3.1, 10);
-        let r = g1[0] + (g2[0] - g1[0]) * nz1, g = g1[1] + (g2[1] - g1[1]) * nz1, b = g1[2] + (g2[2] - g1[2]) * nz1;
-        const steep = smoothstep(snowy ? 0.42 : 0.30, snowy ? 0.62 : 0.55, 1 - ny);
-        r += (cl[0] - r) * steep; g += (cl[1] - g) * steep; b += (cl[2] - b) * steep;
-        // layer weights: open ground (grass, with leaf litter in patches under trees), rock on steep faces
+        let r, g, b, c0 = cl[0], c1 = cl[1], c2 = cl[2], al = alb;
         lw.fill(0);
-        if (leafy > 0) { const ff = leafy * smoothstep(0.35, 0.7, noise2(x / 13, z / 13, 57) * 0.5 + 0.5); lw[0] = 1 - ff; lw[7] = ff; } else lw[offLayer] = 1;
+        if (B) {
+          // open world: two biomes meet here; mix their ground colours, cliffs and ground textures
+          const ea = B[ch.bio[q]], eb = B[ch.bio2[q]], t2 = ch.bt[q], t1 = 1 - t2;
+          const A1 = ea.grass, A2 = ea.grass2, B1 = eb.grass, B2 = eb.grass2;
+          r = (A1[0] + (A2[0] - A1[0]) * nz1) * t1 + (B1[0] + (B2[0] - B1[0]) * nz1) * t2;
+          g = (A1[1] + (A2[1] - A1[1]) * nz1) * t1 + (B1[1] + (B2[1] - B1[1]) * nz1) * t2;
+          b = (A1[2] + (A2[2] - A1[2]) * nz1) * t1 + (B1[2] + (B2[2] - B1[2]) * nz1) * t2;
+          c0 = ea.cliff[0] * t1 + eb.cliff[0] * t2; c1 = ea.cliff[1] * t1 + eb.cliff[1] * t2; c2 = ea.cliff[2] * t1 + eb.cliff[2] * t2;
+          al = (ea.albedo || 1) * t1 + (eb.albedo || 1) * t2;
+          litter = smoothstep(0.35, 0.7, noise2(x / 13, z / 13, 57) * 0.5 + 0.5);
+          addLayer(ea, t1); addLayer(eb, t2);
+        } else {
+          r = g1[0] + (g2[0] - g1[0]) * nz1; g = g1[1] + (g2[1] - g1[1]) * nz1; b = g1[2] + (g2[2] - g1[2]) * nz1;
+          // layer weights: open ground (grass, with leaf litter in patches under trees), rock on steep faces
+          if (leafy > 0) { const ff = leafy * smoothstep(0.35, 0.7, noise2(x / 13, z / 13, 57) * 0.5 + 0.5); lw[0] = 1 - ff; lw[7] = ff; } else lw[offLayer] = 1;
+        }
+        const steep = smoothstep(snowy ? 0.42 : 0.30, snowy ? 0.62 : 0.55, 1 - ny);
+        r += (c0 - r) * steep; g += (c1 - g) * steep; b += (c2 - b) * steep;
+        if (B && y < sea + 1.7) {
+          // every shoreline is a beach: sand above the waterline, darker wet sand and seabed below it
+          const sh = smoothstep(sea + 1.7, sea + 0.35, y), deep = smoothstep(sea, sea - 5, y);
+          r += (0.78 - r) * sh; g += (0.70 - g) * sh; b += (0.50 - b) * sh;
+          r *= 1 - 0.5 * deep; g *= 1 - 0.42 * deep; b *= 1 - 0.35 * deep;
+          for (let m = 0; m < 8; m++) lw[m] *= 1 - sh;
+          lw[5] += sh;
+          al += (0.8 - al) * sh;
+        }
         if (steep > 0) { for (let m = 0; m < 8; m++) lw[m] *= 1 - steep; lw[3] += steep; }
         const e = ch.e[q];
         let glow = 0;
@@ -904,7 +1178,7 @@ export class World {
           const cr = Math.abs(noise2(x / 1.7, z / 1.7, 31));
           const k2 = cr < 0.22 ? 1.25 : 0.42;
           colr[k * 3] = r * k2; colr[k * 3 + 1] = g * k2 * (cr < 0.22 ? 1.2 : 0.6); colr[k * 3 + 2] = b * k2;
-        } else { colr[k * 3] = r * nz2 * alb; colr[k * 3 + 1] = g * nz2 * alb; colr[k * 3 + 2] = b * nz2 * alb; }
+        } else { colr[k * 3] = r * nz2 * al; colr[k * 3 + 1] = g * nz2 * al; colr[k * 3 + 2] = b * nz2 * al; }
         for (let m = 0; m < 8; m++) wgt[k * 8 + m] = Math.round(Math.min(1, lw[m]) * 255);
       }
     }
@@ -1004,8 +1278,21 @@ export class World {
     this.scenery.update(dt, fx, fz, camera, this.weatherNow, this.day);
 
     const cp = camera.position;
-    this.sky.mesh.position.copy(cp);
-    this.sky.ring.position.set(cp.x, Math.min(cp.y - 50, tr.meta.startY - 30), cp.z);
+    if (this.skyboxEnabled) {
+      this.sky.mesh.position.copy(cp);
+      this.sky.ring.position.set(cp.x, Math.min(cp.y - 50, tr.meta.startY - 30), cp.z);
+    }
+    if (this.ocean) {
+      this.ocean.position.x = Math.round(cp.x / 16) * 16; this.ocean.position.z = Math.round(cp.z / 16) * 16;
+      this.oceanNormal.offset.set(time * 0.006, time * 0.011);
+    }
+    if (this._sunI !== undefined) {
+      // under the rock (free roam tunnel) the daylight goes
+      const c = this.cover || 0;
+      this.sun.intensity = this._sunI * (1 - 0.97 * c);
+      this.hemi.intensity = this._hemiI * (1 - 0.86 * c);
+      this.scene.environmentIntensity = this._envI * (1 - 0.9 * c);
+    }
     const sd = this.c.sunDir;
     this.sun.target.position.set(fx, cp.y - 3, fz);
     this.sun.position.set(fx + sd.x * 70, cp.y - 3 + sd.y * 70, fz + sd.z * 70);

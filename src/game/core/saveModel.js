@@ -55,11 +55,16 @@ export function defaultSave() {
       camShake: true,
       camera: 'chase',
       quality: 'auto',
-      difficulty: 'standard'
+      skybox: false,
+      difficulty: 'standard',
+      hud: 'simple' // 'simple' | 'full' driving display
     },
     stats: { runs: 0, totalCoins: 0, stunts: 0, distance: 0, driveTime: 0, recoveries: 0, tracksDone: 0, caches: 0, golds: 0, cleanRuns: 0, relics: 0, hardcore: 0, nightRuns: 0, cargoRuns: 0, dailies: 0 }
   };
 }
+
+/** Difficulties a save may refer to (keep in step with DIFFICULTY in drive/core/session.js). */
+export const DIFFICULTY_IDS = ['casual', 'standard', 'hardcore'];
 
 const clampLevel = (n) => Math.min(MAX_UPGRADE, Math.max(1, Math.floor(Number(n) || 1)));
 
@@ -71,6 +76,9 @@ export function migrateSave(raw) {
   out.coins = Math.max(0, Math.floor(Number(raw.coins) || 0));
   out.bestDistance = Math.max(0, Math.floor(Number(raw.bestDistance) || 0));
   out.settings = { ...base.settings, ...(raw.settings || {}) };
+  // values that no longer exist (a removed difficulty, an unknown display mode) fall back to the defaults
+  if (!DIFFICULTY_IDS.includes(out.settings.difficulty)) out.settings.difficulty = base.settings.difficulty;
+  if (out.settings.hud !== 'full') out.settings.hud = 'simple';
   out.stats = { ...base.stats, ...(raw.stats || {}) };
 
   // Upgrades: v1 was one flat object, v2 is per vehicle.
@@ -100,6 +108,8 @@ export function migrateSave(raw) {
   }
   const rs = raw.resume;
   out.resume = rs && typeof rs === 'object' && typeof rs.trackId === 'string' && rs.state && typeof rs.state === 'object' ? rs : null;
+  // a run saved on a difficulty or run type that has been removed cannot be picked up again
+  if (out.resume && ((typeof out.resume.difficulty === 'string' && !DIFFICULTY_IDS.includes(out.resume.difficulty)) || out.resume.mission === 'cargo')) out.resume = null;
   out.ghosts = {};
   if (raw.ghosts && typeof raw.ghosts === 'object') {
     for (const [id, g] of Object.entries(raw.ghosts)) if (g && Array.isArray(g.s) && Array.isArray(g.d)) out.ghosts[id] = { s: g.s, d: g.d };
@@ -120,7 +130,7 @@ export function migrateSave(raw) {
         objectives: v.objectives && typeof v.objectives === 'object' ? { ...v.objectives } : {},
         caches: Array.isArray(v.caches) ? v.caches.map(Boolean) : [],
         relics: Array.isArray(v.relics) ? v.relics.map(Boolean) : [],
-        diff: typeof v.diff === 'string' ? v.diff : '',
+        diff: DIFFICULTY_IDS.includes(v.diff) ? v.diff : v.diff === 'extreme' ? 'hardcore' : '',
         runs: Math.max(0, Math.floor(Number(v.runs) || 0)),
         times: Array.isArray(v.times) ? v.times.filter((x) => x && x.t > 0).slice(0, 5).map((x) => ({ t: Number(x.t), v: String(x.v || ''), d: String(x.d || '') })) : []
       };

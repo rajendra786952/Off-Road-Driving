@@ -14,7 +14,7 @@ import { UPGRADE_INFO, GEAR_INFO, buildParams } from '../drive/core/specs.js';
 import { launchDrive } from '../drive/launch.js';
 import { VEHICLES, PAINTS } from '../game/config/vehicles.js';
 import { MAX_UPGRADE, UPGRADE_KEYS, GEAR_KEYS, TIRE_IDS, upgradeCost } from '../game/core/saveModel.js';
-import { DEBUG } from '../game/config/constants.js';
+import { DEBUG, UNLOCK_ALL_TRACKS } from '../game/config/constants.js';
 import { vibrate } from '../game/systems/platform.js';
 
 const coins = (n) => Math.round(n).toLocaleString('en-US');
@@ -32,7 +32,7 @@ const endsAtNight = (t) => (t.hours ? t.hours[1] : HOURS[t.time] || 13) >= 19.4;
 const MEDAL = ['', 'Bronze', 'Silver', 'Gold'];
 
 function nextTrack(save) {
-  return TRACK_META.find((t) => !save.tracks[t.id]?.done && (DEBUG || isTrackUnlocked(save, t.id))) || TRACK_META[TRACK_META.length - 1];
+  return TRACK_META.find((t) => !save.tracks[t.id]?.done && (DEBUG || UNLOCK_ALL_TRACKS || isTrackUnlocked(save, t.id))) || TRACK_META[TRACK_META.length - 1];
 }
 
 // ----------------------------------------------------------------- pieces
@@ -58,6 +58,27 @@ function TopBar({ title, onBack, save, right }) {
     </header>
   );
 }
+/** If a screen fails to draw, say so and offer the way home instead of leaving a black screen. */
+class ScreenGuard extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error) { console.error('Screen failed to draw:', error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="screen" style={{ display: 'grid', placeItems: 'center', textAlign: 'center', padding: '2em' }}>
+        <div>
+          <h2>This screen could not be shown</h2>
+          <p style={{ opacity: 0.75, margin: '0.6em 0 1.2em' }}>{String(this.state.error && this.state.error.message || this.state.error)}</p>
+          <button className="cta" onClick={() => { this.setState({ error: null }); this.props.onHome(); }}><strong>Back to the main menu</strong></button>
+        </div>
+      </div>
+    );
+  }
+}
+
+/** A difficulty by id; anything unknown (an old save) is Standard, never a crash. */
+const diffOf = (id) => DIFFICULTY[id] || DIFFICULTY.standard;
 function Stars({ n, of }) { return <span className="stars">{'★'.repeat(n)}<em>{'★'.repeat(Math.max(0, of - n))}</em></span>; }
 
 // ------------------------------------------------------------------- home
@@ -82,7 +103,7 @@ function Home({ go, save, shell, onDrive }) {
             <button className="cta" style={{ marginBottom: '0.6em' }} onClick={() => { sfx.go(); onDrive(rs.trackId, rs.difficulty, undefined, { resume: true }); }}>
               <small>RESUME YOUR RUN</small>
               <strong>{rsMeta.name}</strong>
-              <span>From checkpoint {rs.cp} &middot; {DIFFICULTY[rs.difficulty]?.name || 'Standard'}{rs.mission === 'cargo' ? ' · cargo run' : ''}</span>
+              <span>From checkpoint {rs.cp} &middot; {DIFFICULTY[rs.difficulty]?.name || 'Standard'}</span>
             </button>
           )}
           <button className="cta" onClick={() => { sfx.go(); go('tracks', { region: region.id, track: nt.id }); }}>
@@ -117,7 +138,7 @@ function Regions({ go, back, save }) {
       <TopBar title="Choose a region" onBack={back} save={save} />
       <div className="region-row">
         {REGIONS.map((r, i) => {
-          const open = DEBUG || isRegionUnlocked(save, r.id);
+          const open = DEBUG || UNLOCK_ALL_TRACKS || isRegionUnlocked(save, r.id);
           const pr = regionProgress(save, r.id);
           return (
             <button key={r.id} className={`region-card${open ? '' : ' locked'}`} style={{ '--accent': r.color }}
@@ -143,13 +164,12 @@ function Regions({ go, back, save }) {
 function Tracks({ go, back, save, params, shell, onDrive }) {
   const region = REGIONS.find((r) => r.id === params.region) || REGIONS[0];
   const list = TRACK_META.filter((t) => t.region === region.id);
-  const firstOpen = list.find((t) => !save.tracks[t.id]?.done && (DEBUG || isTrackUnlocked(save, t.id))) || list[0];
+  const firstOpen = list.find((t) => !save.tracks[t.id]?.done && (DEBUG || UNLOCK_ALL_TRACKS || isTrackUnlocked(save, t.id))) || list[0];
   const [sel, setSel] = useState(params.track && list.find((t) => t.id === params.track) ? params.track : firstOpen.id);
-  const [diff, setDiff] = useState(save.settings.difficulty || 'standard');
-  const [mission, setMission] = useState('standard');
+  const [diff, setDiff] = useState(diffOf(save.settings.difficulty).id);
   const dc = dailyChallenge(save);
   const t = list.find((x) => x.id === sel) || list[0];
-  const open = DEBUG || isTrackUnlocked(save, t.id);
+  const open = DEBUG || UNLOCK_ALL_TRACKS || isTrackUnlocked(save, t.id);
   const rec = save.tracks[t.id];
   const n = TRACK_META.indexOf(t) + 1;
   const veh = VEHICLES.find((v) => v.id === save.selectedVehicle);
@@ -163,7 +183,7 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
       <div className="tracks-grid">
         <ol className="track-list">
           {list.map((x) => {
-            const o = DEBUG || isTrackUnlocked(save, x.id);
+            const o = DEBUG || UNLOCK_ALL_TRACKS || isTrackUnlocked(save, x.id);
             const r = save.tracks[x.id];
             return (
               <li key={x.id}>
@@ -185,7 +205,7 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
             <span><small>Weather</small>{weatherLabel(t)}</span>
             <span><small>Time of day</small>{whenLabel(t)}{endsAtNight(t) ? ' ☾' : ''}</span>
             <span><small>Gold time</small>{fmtTime(t.par.gold)}</span>
-            <span><small>Reward</small>{coins(t.reward * DIFFICULTY[diff].reward)}</span>
+            <span><small>Reward</small>{coins(t.reward * diffOf(diff).reward)}</span>
             {isDaily && <span className="wide" style={{ borderColor: '#ffd23f' }}><small>Daily challenge</small>Finish today for +{coins(dc.bonus)}</span>}
             <span className="wide"><small>Recommended</small>{t.rec}</span>
             <span className="wide"><small>Your truck</small>{veh.name} &middot; {TIRES[save.tires[veh.id].sel].name}</span>
@@ -197,31 +217,24 @@ function Tracks({ go, back, save, params, shell, onDrive }) {
             <div className="record">
               <b>Best {fmtTime(rec.bestTime)}</b>{rec.medal ? <span className={`medal m${rec.medal}`}>{MEDAL[rec.medal]}</span> : null}
               <Stars n={rec.stars} of={objTotal} />
-              <span>Caches {rec.caches.filter(Boolean).length}/{rec.caches.length} &middot; Relics {(rec.relics || []).filter(Boolean).length}/3{rec.diff ? ` · ${DIFFICULTY[rec.diff].name}` : ''}</span>
+              <span>Caches {rec.caches.filter(Boolean).length}/{rec.caches.length} &middot; Relics {(rec.relics || []).filter(Boolean).length}/3{rec.diff ? ` · ${diffOf(rec.diff).name}` : ''}</span>
             </div>
           )}
-          <div className="diff">
+          <div className="diff" style={{ gridTemplateColumns: `repeat(${Object.keys(DIFFICULTY).length}, 1fr)` }}>
             {Object.values(DIFFICULTY).map((d) => (
               <button key={d.id} className={diff === d.id ? 'on' : ''} onClick={() => { sfx.click(); setDiff(d.id); act((S) => S.setSetting('difficulty', d.id)); }}>
                 <b>{d.name}</b><small>x{d.reward} rewards</small>
               </button>
             ))}
           </div>
-          <p className="diff-desc">{DIFFICULTY[diff].desc}</p>
-          <div className="diff">
-            {[['standard', 'Expedition', 'Reach the finish'], ['cargo', 'Cargo run', 'Up to +60% for an intact load']].map(([id, name, sub]) => (
-              <button key={id} className={mission === id ? 'on' : ''} onClick={() => { sfx.click(); setMission(id); }}>
-                <b>{name}</b><small>{sub}</small>
-              </button>
-            ))}
-          </div>
+          <p className="diff-desc">{diffOf(diff).desc}</p>
           {open && rs && (
             <button className="cta start" style={{ marginBottom: '0.5em' }} onClick={() => { sfx.go(); onDrive(t.id, rs.difficulty, undefined, { resume: true }); }}>
-              <strong>RESUME</strong><span>From checkpoint {rs.cp} &middot; {DIFFICULTY[rs.difficulty]?.name || 'Standard'}{rs.mission === 'cargo' ? ' · cargo run' : ''}</span>
+              <strong>RESUME</strong><span>From checkpoint {rs.cp} &middot; {DIFFICULTY[rs.difficulty]?.name || 'Standard'}</span>
             </button>
           )}
           {open
-            ? <button className="cta start" onClick={() => { sfx.go(); onDrive(t.id, diff, undefined, { mission }); }}><strong>{rs ? 'START OVER' : rec?.done ? 'DRIVE AGAIN' : 'START'}</strong><span>8-15 minutes &middot; every checkpoint saves your run</span></button>
+            ? <button className="cta start" onClick={() => { sfx.go(); onDrive(t.id, diff); }}><strong>{rs ? 'START OVER' : rec?.done ? 'DRIVE AGAIN' : 'START'}</strong><span>8-15 minutes &middot; every checkpoint saves your run</span></button>
             : <div className="locked-note">&#128274; Finish &ldquo;{TRACK_META[n - 2]?.name}&rdquo; to unlock this track.</div>}
         </section>
       </div>
@@ -411,7 +424,8 @@ function Settings({ back, save }) {
         <Row label="Steering control" hint="Buttons, an analog slider you drag left and right, or tilting the phone like a wheel. A gamepad always works." value={(s.steerMode || 'buttons').toUpperCase()} onClick={() => cyc('steerMode', ['buttons', 'slider', 'tilt'])} />
         <Row label="Steering speed" hint="How fast the wheels follow the steering buttons." value={sens < 0.9 ? 'SLOW' : sens > 1.2 ? 'FAST' : 'NORMAL'} onClick={() => cyc('steerSens', [0.7, 1, 1.35])} />
         <Row label="Camera shake" hint="Shake on rough ground and impacts." value={s.camShake === false ? 'OFF' : 'ON'} onClick={() => act((S) => S.setSetting('camShake', s.camShake === false))} />
-        <Row label="Default difficulty" hint={DIFFICULTY[s.difficulty || 'standard'].desc} value={DIFFICULTY[s.difficulty || 'standard'].name.toUpperCase()} onClick={() => cyc('difficulty', ['casual', 'standard', 'hardcore'])} />
+        <Row label="Driving display" hint={s.hud === 'full' ? 'Everything: tilt gauge, rev bar, gear and surface, challenge tips.' : 'Only what you need: speed, fuel, damage, time and the map.'} value={s.hud === 'full' ? 'FULL' : 'SIMPLE'} onClick={() => cyc('hud', ['simple', 'full'])} />
+        <Row label="Default difficulty" hint={diffOf(s.difficulty).desc} value={diffOf(s.difficulty).name.toUpperCase()} onClick={() => cyc('difficulty', ['casual', 'standard', 'hardcore'])} />
         <Row label="Sound" hint="Engine, tyres, weather and interface sounds." value={s.sound ? 'ON' : 'OFF'} onClick={() => act((S) => S.setSetting('sound', !s.sound))} />
         <Row label="Vibration" hint="Haptic feedback on impacts (phones)." value={s.vibration ? 'ON' : 'OFF'} onClick={() => { act((S) => S.setSetting('vibration', !s.vibration)); vibrate(60); }} />
         <Row label="Show frame rate" hint="FPS counter in the driving HUD." value={s.showFps ? 'ON' : 'OFF'} onClick={() => act((S) => S.setSetting('showFps', !s.showFps))} />
@@ -447,11 +461,11 @@ export default function App({ shell }) {
     setMode('drive');
     launchDrive({
       trackId, difficulty, testVehicle, audioCtx: shell.audioCtx(),
-      mission: extra.mission, resume: extra.resume ? save.resume : null,
+      resume: extra.resume ? save.resume : null,
       onExit: (action, id) => {
         const meta = TRACK_META.find((t) => t.id === id);
         const nextId = TRACK_META[TRACK_META.indexOf(meta) + 1]?.id;
-        if (action === 'retry') { setTimeout(() => drive(id, difficulty, testVehicle, { mission: extra.mission || (extra.resume && save.resume ? save.resume.mission : undefined) }), 30); return; }
+        if (action === 'retry') { setTimeout(() => drive(id, difficulty, testVehicle), 30); return; }
         if (testVehicle) { setMode('ui'); setStack([{ name: 'home', params: {} }]); setRoute({ name: 'garage', params: { vehicle: testVehicle } }); return; }
         if (action === 'next' && nextId) { setTimeout(() => drive(nextId, difficulty), 30); return; }
         setMode('ui');
@@ -473,6 +487,7 @@ export default function App({ shell }) {
   const key = route.name + (route.params.region || '');
   return (
     <div className="ui" key={key}>
+      <ScreenGuard onHome={() => { setStack([]); setRoute({ name: 'home', params: {} }); }}>
       {route.name === 'home' && <Home {...p} onDrive={drive} />}
       {route.name === 'regions' && <Regions {...p} />}
       {route.name === 'tracks' && <Tracks {...p} onDrive={drive} />}
@@ -480,6 +495,7 @@ export default function App({ shell }) {
       {route.name === 'profile' && <Profile {...p} />}
       {route.name === 'achievements' && <Achievements {...p} />}
       {route.name === 'settings' && <Settings {...p} />}
+      </ScreenGuard>
     </div>
   );
 }

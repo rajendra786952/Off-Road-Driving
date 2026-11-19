@@ -86,7 +86,7 @@ test('terrain: heights are continuous and props never sit on the road', () => {
     for (const p of tr.propsFor(cx, cz)) {
       tr.surfaceAt(p.x, p.z);
       assert.ok(!tr.sq.onRoad, 'prop on the road');
-      assert.ok(Math.abs(p.y - tr.heightAt(p.x, p.z)) < 1e-6, 'floating prop');
+      if (p.type !== 'building') assert.ok(Math.abs(p.y - tr.heightAt(p.x, p.z)) < 1e-6, 'floating prop');      // a building stands on a level foundation
     }
   }
 });
@@ -299,20 +299,20 @@ test('progression: unlock chain, rewards, records, achievements, save round-trip
   assert.deepEqual(old.tires['mountain-jeep'], { owned: ['at'], sel: 'at' });
 });
 
-test('resume from a checkpoint, cargo runs, punctures, steering pull and brake fade', () => {
+test('resume from a checkpoint, punctures, steering pull and brake fade', () => {
   const def = TRACKS[0];
   const tr = def.build();
   // drive past the first checkpoint, snapshot, and restore into a fresh session
-  const a = new DriveSession(tr, buildParams('mountain-jeep'), { mission: 'cargo' });
+  const a = new DriveSession(tr, buildParams('mountain-jeep'));
   a.spawn(tr.checkpoints[0].s - 6);
   a.mainIdx = tr.locateMain(a.vehicle.p[0], a.vehicle.p[2], 0);
   for (let i = 0; i < 60 * 8 && a.cpNext === 0; i++) a.update(1 / 60, { gas: 0.6 });
   assert.equal(a.cpNext, 1, 'should have taken checkpoint 1');
-  a.damage = 37; a.cargo = 64; a.penalty = 20; a.caches[0].found = true;
+  a.damage = 37; a.penalty = 20; a.caches[0].found = true;
   const snap = JSON.parse(JSON.stringify(a.snapshot()));
-  const b = new DriveSession(tr, buildParams('mountain-jeep'), { mission: 'cargo', resume: snap });
-  assert.ok(b.resumed && b.cpNext === 1 && b.damage === 37 && b.cargo === 64 && b.penalty === 20 && b.caches[0].found);
-  assert.ok(Math.abs(b.time - a.time) < 1e-9 && b.mission === 'cargo');
+  const b = new DriveSession(tr, buildParams('mountain-jeep'), { resume: snap });
+  assert.ok(b.resumed && b.cpNext === 1 && b.damage === 37 && b.penalty === 20 && b.caches[0].found);
+  assert.ok(Math.abs(b.time - a.time) < 1e-9);
   const pose = tr.roadPose(tr.checkpoints[0].s);
   assert.ok(Math.hypot(b.vehicle.p[0] - pose.x, b.vehicle.p[2] - pose.z) < 1, 'resumes at the checkpoint');
   assert.ok(!new DriveSession(tr, buildParams('mountain-jeep'), { resume: { v: 99 } }).resumed, 'a bad snapshot is ignored');
@@ -356,14 +356,11 @@ test('resume from a checkpoint, cargo runs, punctures, steering pull and brake f
   assert.ok(rv.speed < -2 && rv.speed > -9.5, `reverse speed ${rv.speed}`);
 });
 
-test('economy and retention: repairs, cargo bonus, daily challenge, best times, paint, upgrade tiers', () => {
+test('economy and retention: repairs, daily challenge, best times, paint, upgrade tiers', () => {
   const run = (o = {}) => ({ relicsFound: [false, false, false], rewardMult: 1, difficulty: 'Standard', difficultyId: 'standard', time: 700, medal: 2, stars: 2, objectives: [{ id: 'finish', done: true }], recoveries: 1, damage: 0, cachesFound: [false, false], cacheRewards: [120, 120], distance: 4000, driveTime: 700, ...o });
   const clean = applyResult(defaultSave(), 'forest-entry', run());
   const wrecked = applyResult(defaultSave(), 'forest-entry', run({ damage: 90 }));
   assert.ok(wrecked.coins < clean.coins && wrecked.lines.some((l) => /Repairs/.test(l.text)), 'damage costs coins');
-  const cargo = applyResult(defaultSave(), 'forest-entry', run({ cargo: 100 }));
-  const smashed = applyResult(defaultSave(), 'forest-entry', run({ cargo: 0 }));
-  assert.ok(cargo.coins > clean.coins && smashed.coins === clean.coins, 'an intact load pays a bonus, a destroyed one nothing extra');
   // daily challenge: deterministic per date, only among unlocked tracks, pays once
   const save = defaultSave();
   const dc = dailyChallenge(save, '2026-11-18');

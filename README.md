@@ -18,10 +18,12 @@ Requires **Node 20+**.
 ```bash
 npm install
 npm run dev          # http://localhost:5173   (add ?debug=1 to unlock every track)
-npm test             # 26 tests: tracks, physics, rules, progression, save migration, classic core
+npm test             # tests: tracks, physics, rules, progression, save migration, classic core
 npm run bot          # headless test driver over all 40 tracks (add: -- <trackId>, -- all --stock)
 npm run physcheck    # physics sanity numbers
 node scripts/pars.mjs   # re-derive gold times from the test driver after changing tracks or physics
+node scripts/obstacles.mjs [trackId|all] [tier]   # list the generated obstacle layer per track and prove it is playable
+node scripts/bot.mjs all --obstacles=hard         # test driver with generated obstacles (easy | medium | hard | extreme)
 ```
 
 Desktop keys while driving: **arrows / WASD** drive, **Space** handbrake, **L** low range, **X** diff lock,

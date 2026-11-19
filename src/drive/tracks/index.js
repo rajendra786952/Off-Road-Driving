@@ -10,6 +10,7 @@ import { JUNGLE_TRACKS } from './jungle.js';
 import { VOLCANO_TRACKS } from './volcano.js';
 import { TOUR_TRACKS } from './tour.js';
 import { TRACK_META } from './meta.js';
+import './journey.js';      // every track passes through areas (town, farmland, coast...) - see journey.js
 
 export { REGIONS } from './regions.js';
 

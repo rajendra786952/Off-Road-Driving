@@ -11,10 +11,13 @@ import { CarModel } from './render/carModel.js';
 import { Hud } from './hud.js';
 import { DriveAudio } from './audio.js';
 import { DriveSession, scoreRun, fmtTime } from './core/session.js';
-import { fmtClock } from './render/sky.js';
+import { fmtClock, ENABLE_SKYBOX } from './render/sky.js';
 import { buildParams } from './core/specs.js';
 import { TIRES } from './core/surfaces.js';
 import { BotDriver } from './core/bot.js';
+import { HazardView } from './render/hazards.js';
+import { TIER_FOR_DIFFICULTY } from './core/obstacles.js';
+import { challengeRewards } from './core/progress.js';
 
 const CAMS = ['chase', 'far', 'hood', 'cockpit', 'cinematic'];
 const lerpAngle = (a, b, t) => { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * t; };
@@ -22,7 +25,7 @@ const lerpAngle = (a, b, t) => { let d = b - a; while (d > Math.PI) d -= 2 * Mat
 export class DriveGame {
   /**
    * opts: { parent, def (track def), vehicle (VEHICLES entry), ups, gear, settings, audioCtx,
-   *         mission ('standard' | 'cargo'), resume (session snapshot), ghost ({ s, d } best-run trace),
+   *         resume (session snapshot), ghost ({ s, d } best-run trace),
    *         onCheckpoint(snapshot), coach (false for test drives),
    *         onFinish(session, score) -> reward summary, onExit(action), hasNext }
    */
@@ -51,7 +54,7 @@ export class DriveGame {
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.3, 1400);
 
     this.params = buildParams(opts.vehicle.id, opts.ups, opts.gear);
-    this.hud = new Hud(this.root, { difflock: this.params.difflock, winch: this.params.winch, hot: ['desert', 'volcano'].includes(opts.def.env || opts.def.region), cargo: opts.mission === 'cargo', steerMode: opts.settings.steerMode });
+    this.hud = new Hud(this.root, { difflock: this.params.difflock, winch: this.params.winch, hot: ['desert', 'volcano'].includes(opts.def.env || opts.def.region), steerMode: opts.settings.steerMode, simple: opts.settings.hud !== 'full' });
     this.hud.loading(`Loading ${opts.def.name}...`, 0.05);
 
     this.onResize = () => {
@@ -92,10 +95,21 @@ export class DriveGame {
     if (this.disposed) return;
     const o = this.opts;
     this.track = o.def.build();
-    this.session = new DriveSession(this.track, this.params, { difficulty: o.difficulty, mission: o.mission, resume: o.resume });
+    // generated obstacles follow the difficulty (settings.obstacles === false turns the layer off, ?obstacles=<tier> overrides it)
+    const obTier = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('obstacles')) || TIER_FOR_DIFFICULTY[o.difficulty] || 'medium';
+    const obstacles = o.settings.obstacles === false || obTier === 'off' ? null
+      : { difficulty: obTier, dynamicEvents: o.settings.dynamicHazards !== false, categories: { wildlife: o.settings.wildlife !== false } };
+    this.session = new DriveSession(this.track, this.params, { difficulty: o.difficulty, resume: o.resume, obstacles });
     this.weather = this.session.weather;
     this.world = new World(this.track, this.q, this.renderer);
+    if (!ENABLE_SKYBOX) {
+      this.world.setSkyboxEnabled(false);
+    } else if (o.settings && typeof o.settings.skybox === 'boolean') {
+      this.world.setSkyboxEnabled(o.settings.skybox);
+    }
     this.world.init(this.session);
+    if (typeof window !== 'undefined') window.setSkyboxEnabled = (v) => this.world && this.world.setSkyboxEnabled(v);
+    this.world.setAtmosphere(this.session.weather, this.session.hour, 1);
     this.atmoT = 0;
     this.car = new CarModel(o.vehicle, this.params, this.session.vehicle, { pbr: this.q.pbr });
     this.world.scene.add(this.car.group);
@@ -129,6 +143,7 @@ export class DriveGame {
     this.lamp.target.position.set(0, this.car.lampPos.y - 1.4, 16);
     this.car.group.add(this.lamp, this.lamp.target);
     this._buildFx();
+    this.hazardView = this.session.hazards ? new HazardView(this.world, this.session.hazards) : null;
     if (this.q.post) {
       try {
         const w = this.root.clientWidth || window.innerWidth, h = this.root.clientHeight || window.innerHeight;
@@ -157,6 +172,8 @@ export class DriveGame {
     this._camera(1);
     this.world.update(0, veh.p[0], veh.p[2], this.camera, 0);
     this._warmTotal = Math.max(1, this.world.pending);
+    if (this.composer) this.composer.render();
+    else this.renderer.render(this.world.scene, this.camera);
     this.last = performance.now();
     this.raf = requestAnimationFrame((t) => this._frame(t));
   }
@@ -222,6 +239,14 @@ export class DriveGame {
     this.pLife[i] = 0.7 + Math.random() * 0.5;
   }
 
+  /** A puff of particles at a world position (rock dust, splinters, splashes). */
+  _burstFx(x, y, z, n, spread, up) {
+    for (let k = 0; k < n; k++) {
+      this._spawnParticle(x + (Math.random() - 0.5) * spread, y + 0.2 + Math.random() * 0.6, z + (Math.random() - 0.5) * spread,
+        (Math.random() - 0.5) * spread * 1.6, up * (0.4 + Math.random()), (Math.random() - 0.5) * spread * 1.6);
+    }
+  }
+
   _updateFx(dt) {
     const veh = this.session.vehicle, tr = this.track;
     // particles
@@ -230,7 +255,8 @@ export class DriveGame {
       const w = veh.wheels[i];
       if (!w.grounded) continue;
       const slip = Math.abs(w.slip), sp = Math.abs(veh.speed);
-      const wet = w.water > 0.05;
+      // a wheel dropping into a water-filled pothole splashes like a ford
+      const wet = w.water > 0.05 || (tr.layer && Math.abs(veh.speed) > 1.5 && tr.bumpAt(w.wx, w.wz) < -0.05);
       const rate = wet ? sp * 0.5 : slip > 1.5 ? 0.9 : sp > 6 && w.surface.sink < 0.1 ? 0.25 : 0;
       if (Math.random() < rate * dt * 30) {
         const back = slip > 1.5 ? -Math.sign(w.slip) : -0.3;
@@ -405,15 +431,19 @@ export class DriveGame {
       const done = 1 - this.world.pending / this._warmTotal;
       this.hud.loading(`Loading ${this.opts.def.name}...`, 0.1 + 0.9 * done);
       if (this.world.pending === 0) {
-        this.hud.loaded();
         this.state = 'run';
         this.loadMs = Math.round(performance.now() - this.t0);
         this.audio.start();
         this.hud.toast(ss.resumed ? `Resumed at checkpoint ${ss.cpNext}/${this.track.checkpoints.length}` : `${this.opts.def.name}  -  ${this.weather.name}${this.ghost ? '  -  your ghost is racing you' : ''}`, 3500);
         if (ss.resumed) this._camera(1);
+        this.world.setAtmosphere(ss.weather, ss.hour, 1);
+        if (this.composer) this.composer.render();
+        else this.renderer.render(this.world.scene, this.camera);
+        this.hud.loaded();
+      } else {
+        if (this.composer) this.composer.render();
+        else this.renderer.render(this.world.scene, this.camera);
       }
-      if (this.composer) this.composer.render();
-      else this.renderer.render(this.world.scene, this.camera);
       return;
     }
 
@@ -449,6 +479,11 @@ export class DriveGame {
     this.car.sync();
     this._camera(dt);
     this.world.update(dt, veh.p[0], veh.p[2], this.camera, this.time);
+    if (this.hazardView) {
+      this.hazardView.update(dt, this.time, veh.p[0], veh.p[2]);
+      // rocks on the move throw dust
+      if (this.state === 'run') for (const b of ss.hazards.awake) if ((b.kind === 'rock' || b.kind === 'boulder') && Math.random() < dt * 9 && Math.hypot(b.vx, b.vz) > 1.5) this._burstFx(b.x, b.y, b.z, 1, b.r * 2, 1.5);
+    }
     // atmosphere (weather blend + clock) a few times a second
     this.atmoT += dt;
     if (this.atmoT > 0.25) {
@@ -501,7 +536,32 @@ export class DriveGame {
       else if (e.type === 'burn') { this.audio.scrape(2); this.shake = Math.max(this.shake, 0.08); }
       else if (e.type === 'recover') { this._camera(1); this.steer = 0; }
       else if (e.type === 'finish') this._finish();
+      else this._hazardEvent(e);
     }
+  }
+
+  /** Generated obstacles: challenge banners, warnings, sound and particles. */
+  _hazardEvent(e) {
+    const hud = this.hud, au = this.audio;
+    if (e.type === 'challenge') { if (!e.dyn && this.opts.settings.hud === 'full') hud.toast(`${e.name.toUpperCase()}  -  ${e.tip}`, 3600); }
+    else if (e.type === 'challengeDone') {
+      const r = this.opts.def.reward || 0, mult = this.session.diff.reward;
+      const coins = Math.round(r * (0.022 + (e.clean ? 0.014 : 0)) * e.w * mult);
+      hud.toast(`${e.name} cleared${e.clean ? ' clean' : ''}   +${coins} coins${e.fuel > 0.05 ? ', +fuel' : ''}`, 2400);
+      au.bonus();
+    } else if (e.type === 'challengeFailed') hud.toast(`${e.name}: no bonus after a recovery`, 2600);
+    else if (e.type === 'hardLine') { hud.toast('HARD LINE held - bonus at the finish', 2600); au.bonus(); }
+    else if (e.type === 'hazard') {
+      if (e.kind === 'rockfall' || e.kind === 'landslide') { hud.toast(e.kind === 'landslide' ? 'LANDSLIDE!  The bank is coming down' : 'ROCKFALL!  Rocks coming down the bank', 3600); au.alarm(); au.rumble(); this.shake = Math.max(this.shake, 0.22); this._burstFx(e.x, e.y, e.z, 26, 9, 3); }
+      else if (e.kind === 'boulder') { hud.toast('BOULDER!  Get out of its lane', 3600); au.alarm(); au.rumble(); this.shake = Math.max(this.shake, 0.18); }
+      else if (e.kind === 'treefall') { hud.toast('TREE FALLING!  Brake', 3200); au.alarm(); au.creak(); }
+      else if (e.kind === 'treedown') { au.crash(e.under ? 7 : 4); this.shake = Math.max(this.shake, e.under ? 0.5 : 0.2); this._burstFx(e.x, e.y, e.z, 30, 7, 2.5); if (e.under && this.opts.vibrate) this.opts.vibrate(150); }
+      else if (e.kind === 'herd') hud.toast(`ANIMALS AHEAD  -  slow down and let the ${e.sp === 'deer' ? 'deer' : e.sp + 's'} cross`, 4200);
+      else if (e.kind === 'gust') { hud.toast('CROSSWIND  -  hold your line', 3000); au.gust(); }
+      else if (e.kind === 'squall') { hud.toast('The weather is closing in fast', 3000); au.gust(); }
+    } else if (e.type === 'break') { au.crack(); this._burstFx(e.x, e.y, e.z, e.kind === 'crate' ? 16 : 7, 1.6, 3); }
+    else if (e.type === 'animalHit') { au.crash(3); hud.toast(`You hit a ${e.sp}!  Wildlife strike penalty`, 3400); this.shake = Math.max(this.shake, 0.25); if (this.opts.vibrate) this.opts.vibrate(100); }
+    else if (e.type === 'birds') { au.flock(); }
   }
 
   /** Move the ghost car along the best run's recorded line. */
@@ -636,6 +696,7 @@ export class DriveGame {
     if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    if (typeof window !== 'undefined' && window.setSkyboxEnabled) delete window.setSkyboxEnabled;
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onHide);
     this.hud.dispose();
@@ -643,7 +704,9 @@ export class DriveGame {
     if (this.world) {
       this.world.dispose();
       this.car.dispose();
+      if (this.hazardView) this.hazardView.dispose();
       for (const o of [this.particles, this.trails, this.winchLine, this.anchorRing]) { o.geometry.dispose(); o.material.dispose(); }
+      this.track.setLayer(null);                                  // the compiled track is cached: leave it clean
       if (this.ghost) { this.ghost.mesh.children.forEach((m) => m.geometry.dispose()); this.ghost.mat.dispose(); }
       this.pTex.dispose();
       this.track.chunks.clear();

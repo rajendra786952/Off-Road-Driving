@@ -1,5 +1,6 @@
 import { Preferences } from '@capacitor/preferences';
 import { defaultSave, migrateSave, MAX_UPGRADE, upgradeCost } from '../core/saveModel.js';
+import { UNLOCK_ALL_TRACKS } from '../config/constants.js';
 
 // Capacitor Preferences = native SharedPreferences on Android, and falls back to
 // localStorage in the browser, so the same code works in `npm run dev`.
@@ -130,6 +131,7 @@ export const SaveSystem = {
 
   // ---- progress --------------------------------------------------------
   isLevelUnlocked(levelId) {
+    if (UNLOCK_ALL_TRACKS) return true;
     return levelId === 1 || (this.data.levels[levelId - 1]?.stars || 0) > 0;
   },
 

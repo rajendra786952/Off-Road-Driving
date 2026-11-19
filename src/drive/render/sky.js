@@ -4,6 +4,9 @@
 // stars at night, aurora over the snow region and crater glow over the volcano.
 import * as THREE from 'three';
 import { noise2 } from '../core/noise.js';
+import { ENABLE_SKYBOX } from '../../game/config/constants.js';
+
+export { ENABLE_SKYBOX };
 
 const STYLE = { cumulus: 0, overcast: 1, wisps: 2, storm: 3, haze: 4, ash: 5 };
 
@@ -112,6 +115,9 @@ export class Sky {
     this.mesh.renderOrder = -10;
     this.mesh.frustumCulled = false;
     this._buildSilhouette(seed);
+    this.visible = ENABLE_SKYBOX;
+    this.mesh.visible = this.visible;
+    if (this.ring) this.ring.visible = this.visible;
   }
 
   /** Distant terrain ring - a different shape language per region. */
@@ -190,6 +196,13 @@ export class Sky {
     u.uHdrMix.value = (a.hdr || 0) * this.hdrFade;
     // the ring is tinted toward the horizon colour (aerial perspective) and darkens at night
     this.ringU.uLight.value.copy(a.ringLight); this.ringU.uHaze.value.copy(a.hor); this.ringU.uMix.value = a.ringMix;
+  }
+
+  /** Dynamically toggle skybox and horizon silhouette visibility */
+  setVisible(visible) {
+    this.visible = !!visible;
+    if (this.mesh) this.mesh.visible = this.visible;
+    if (this.ring) this.ring.visible = this.visible;
   }
 
   /** Use an equirectangular HDR as the clear-day sky. rot = fraction of a turn that lines its sun up with the game's. */

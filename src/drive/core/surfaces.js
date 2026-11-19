@@ -25,7 +25,8 @@ export const SURFACES = {
   deepsnow: { grip: 0.43, roll: 0.100, sink: 0.12, dig: 0.16, drag: 270,  rough: 0.10, color: [0.96, 0.97, 1.00] },
   ice:      { grip: 0.16, roll: 0.012, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.05, color: [0.66, 0.80, 0.90] },
   wood:     { grip: 0.88, roll: 0.020, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.55, color: [0.45, 0.33, 0.20] },
-  scree:    { grip: 0.67, roll: 0.055, sink: 0.03, dig: 0.08, drag: 70,   rough: 0.80, color: [0.50, 0.46, 0.42] }
+  scree:    { grip: 0.67, roll: 0.055, sink: 0.03, dig: 0.08, drag: 70,   rough: 0.80, color: [0.50, 0.46, 0.42] },
+  asphalt:  { grip: 1.10, roll: 0.013, sink: 0.00, dig: 0.00, drag: 0,    rough: 0.06, color: [0.17, 0.17, 0.18] }
 };
 for (const [name, s] of Object.entries(SURFACES)) s.name = name;
 

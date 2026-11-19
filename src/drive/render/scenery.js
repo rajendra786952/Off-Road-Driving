@@ -15,7 +15,9 @@ const COVER = {
   scree:    { tuft: 0.14, h: 0.8,  dry: 0.75, pebble: 0.40, log: 0.12 },
   sand:     { tuft: 0.06, h: 0.9,  dry: 0.95, pebble: 0.08, log: 0.05 },
   deepsnow: { tuft: 0.05, h: 0.9,  dry: 0.85, pebble: 0.04, log: 0.2 },
-  ash:      { tuft: 0.0,  h: 1.0,  dry: 1.0,  pebble: 0.45, log: 0.1 }
+  ash:      { tuft: 0.0,  h: 1.0,  dry: 1.0,  pebble: 0.45, log: 0.1 },
+  mud:      { tuft: 0.55, h: 1.25, dry: 0.30, pebble: 0.03, log: 0.3 },     // open world: reeds in the mangroves
+  gravel:   { tuft: 0.05, h: 0.7,  dry: 0.80, pebble: 0.30, log: 0.0 }
 };
 /** Drifting particles per region silhouette: [colour, size, fall m/s, drift m/s, count multiplier, glow]. */
 const MOTES = {
@@ -184,8 +186,9 @@ export class Scenery {
 
   /** Grass tufts and pebbles in a disc around the truck. */
   _refreshNear(fx, fz) {
-    const tr = this.track, env = this.env, cov = this.cover, C = this.cell, R = this.nearR, seed = tr.seed;
-    const g1 = env.grass, g2 = env.grass2, cl = env.cliff, alb = env.albedo || 1;
+    const tr = this.track, C = this.cell, R = this.nearR, seed = tr.seed, B = tr.biomes;
+    let env = this.env, cov = this.cover;
+    let g1 = env.grass, g2 = env.grass2, cl = env.cliff, alb = env.albedo || 1;
     const snowy = env.off === 'deepsnow';
     const i0 = Math.round(fx / C), j0 = Math.round(fz / C), n = Math.ceil(R / C);
     const wet = tr.water.length > 0 || tr.sidePatches;
@@ -196,18 +199,25 @@ export class Scenery {
         if (d > R) continue;
         const wx = i0 + di, wz = j0 + dj;
         const r0 = rand2(wx, wz, seed + 801);
-        const isTuft = this.tufts && r0 < cov.tuft, isPeb = !isTuft && r0 > 1 - cov.pebble;
-        if (!isTuft && !isPeb) continue;
+        let isTuft = this.tufts && r0 < cov.tuft, isPeb = !isTuft && r0 > 1 - cov.pebble;
+        if (!B && !isTuft && !isPeb) continue;
         const x = (wx + 0.8 * (rand2(wx, wz, seed + 802) - 0.5)) * C, z = (wz + 0.8 * (rand2(wx, wz, seed + 803) - 0.5)) * C;
         const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
         const ch = tr.getChunk(cx, cz);
         const q = (Math.round(z - cz * CHUNK) + 1) * CW + Math.round(x - cx * CHUNK) + 1;
         const e = ch.e[q];
+        if (B) {
+          // open world: the biome under this spot decides what grows here and in which colours
+          env = B[ch.bio[q]]; cov = COVER[env.off] || COVER.grass;
+          g1 = env.grass; g2 = env.grass2; cl = env.cliff; alb = env.albedo || 1;
+          isTuft = this.tufts && r0 < cov.tuft; isPeb = !isTuft && r0 > 1 - cov.pebble;
+          if (!isTuft && !isPeb) continue;
+        }
         if (e < (isTuft ? 0.9 : 0.5)) continue;                               // never on the driving surface
         const slope = Math.abs(ch.h[q + 1] - ch.h[q - 1]) + Math.abs(ch.h[q + CW] - ch.h[q - CW]);
         if (isTuft && slope > 1.5) continue;
         const y = tr.heightAt(x, z);
-        if (wet || e < 70) { const sq = tr.surfaceAt(x, z); if (sq.waterY > y - 0.15 || sq.surface.hot || sq.onRoad) continue; }
+        if (wet || B || e < 70) { const sq = tr.surfaceAt(x, z); if (sq.waterY > y - 0.15 || sq.surface.hot || sq.onRoad) continue; }
         const v = rand2(wx, wz, seed + 804), edge = 1 - Math.max(0, (d - R * 0.62) / (R * 0.38));
         const yaw = v * 6.283;
         if (isTuft) {

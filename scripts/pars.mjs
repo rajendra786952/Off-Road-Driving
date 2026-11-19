@@ -10,7 +10,8 @@ import { buildParams } from '../src/drive/core/specs.js';
 const file = new URL('../src/drive/tracks/meta.js', import.meta.url);
 let src = fs.readFileSync(file, 'utf8');
 for (const def of TRACKS) {
-  const ss = new DriveSession(def.build(), buildParams(def.bot.vehicle, def.bot.ups, def.bot.gear));
+  // pars are set with the obstacle layer the game ships on Standard difficulty
+  const ss = new DriveSession(def.build(), buildParams(def.bot.vehicle, def.bot.ups, def.bot.gear), { obstacles: { difficulty: 'medium' } });
   const res = botRun(ss, 3000);
   if (!res.finished) { console.log(`${def.id}: bot FAILED - par unchanged`); continue; }
   const gold = Math.ceil((res.total * 0.82) / 10) * 10;

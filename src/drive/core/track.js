@@ -53,6 +53,21 @@ function smoothArray(arr, radius, from = 0, to = arr.length) {
   return out;
 }
 
+function catmullRomSmooth(arr, iterations = 2, preserveEnds = 2) {
+  let cur = arr.slice();
+  const n = cur.length;
+  if (n < 5) return cur;
+  for (let it = 0; it < iterations; it++) {
+    const next = cur.slice();
+    for (let i = preserveEnds; i < n - preserveEnds; i++) {
+      // 5-point quintic Catmull-Rom B-spline filter: weights (-1, 4, 10, 4, -1) / 16
+      next[i] = (-cur[i - 2] + 4 * cur[i - 1] + 10 * cur[i] + 4 * cur[i + 1] - cur[i + 2]) / 16;
+    }
+    cur = next;
+  }
+  return cur;
+}
+
 // ---------------------------------------------------------------------------
 // Authoring DSL
 // ---------------------------------------------------------------------------
@@ -67,7 +82,32 @@ export class TrackBuilder {
     this.hd = 0;    // current heading (deg, + = left of the start direction)
     this.base = 0;  // heading the wander() motif is pulled towards
     this.y = 0;     // elevation relative to the start
+    this.x = 0;     // plan position (m), integrated the same way the compiler does
+    this.z = 0;
+    this.marks = {};
     this.rand = mulberry((this.meta.seed | 0) * 2654435761 + 99);
+  }
+
+  /** Name this point of the route (for link()). */
+  mark(name) { this.marks[name] = this.s; return this; }
+
+  /**
+   * A second road between two marked points of the main route (open world road network).
+   * o: { width, surface, rough, wavy, bend (m, sideways bulge), dy (m, hump or dip mid-way), wig (m, meander), biome, name }
+   */
+  link(a, b, o = {}) {
+    if (!(a in this.marks) || !(b in this.marks)) throw new Error(`link: unknown mark ${a} / ${b}`);
+    this.features.push({ type: 'link', sA: this.marks[a], sB: this.marks[b], width: o.width ?? 5, surface: o.surface || 'dirt', rough: o.rough ?? 0.08, wavy: o.wavy ?? 0.12, bend: o.bend ?? 0, dy: o.dy ?? 0, wig: o.wig ?? 0, side: o.side || 0, biome: o.biome, name: o.name || '' });
+    return this;
+  }
+
+  /** The next len m run under a rock roof (author the cutting with high L / R banks). */
+  tunnel(len) { this.features.push({ type: 'tunnel', s0: this.s, s1: this.s + len }); return this; }
+
+  /** A named place beside the road. o: { side, off (m from the road edge), ahead, kind, reward, r } */
+  landmark(id, name, o = {}) {
+    this.features.push({ type: 'landmark', s: this.s + (o.ahead || 0), side: o.side ?? 1, off: o.off ?? 8, id, name, kind: o.kind || 'poi', reward: o.reward ?? 150, r: o.r ?? 32 });
+    return this;
   }
 
   /** Set the general direction of travel for following motifs. */
@@ -79,6 +119,11 @@ export class TrackBuilder {
   /** Drive `len` metres, turning `turn` degrees in total (+ = left), at `grade` percent. */
   go(len, turn = 0, grade = 0, o) {
     this.segs.push({ len, turn, grade, ...this.cur, ...(o || {}) });
+    {
+      const n = Math.max(1, Math.round(len / STEP)), ds = len / n, dh = ((turn * Math.PI) / 180) / n;
+      let h = (this.hd * Math.PI) / 180;
+      for (let i = 0; i < n; i++) { h += dh; this.x += Math.sin(h) * ds; this.z += Math.cos(h) * ds; }
+    }
     this.s += len;
     this.hd += turn;
     this.y += (grade / 100) * len;
@@ -141,11 +186,15 @@ export class TrackBuilder {
   }
   /** Dead-end side trail starting here. segs = [[len, turn, grade], ...]. Ends at a supply cache. */
   spur(turn, segs, o = {}) {
-    this.features.push({ type: 'spur', s: this.s, turn, segs, reward: o.reward ?? 150, name: o.name || 'Supply cache', width: o.width ?? 4.5, surface: o.surface || 'dirt', rough: o.rough ?? 0.1 });
+    this.features.push({ type: 'spur', s: this.s, turn, segs, reward: o.reward ?? 150, name: o.name || 'Supply cache', width: o.width ?? 4.5, surface: o.surface || 'dirt', rough: o.rough ?? 0.1, wavy: o.wavy, cache: o.cache !== false, biome: o.biome ?? this.cur.biome });
     return this;
   }
 
-  build() { return new Track(this); }
+  build() {
+    // tracks/journey.js divides a registered track into areas here, just before it is compiled
+    if (TrackBuilder.journey) TrackBuilder.journey(this);
+    return new Track(this);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,9 +203,14 @@ export class TrackBuilder {
 export class Track {
   constructor(b) {
     this.meta = b.meta;
-    this.env = ENVIRONMENTS[b.meta.env];
+    this.env = b.meta.envDef || ENVIRONMENTS[b.meta.env];
     this.seed = b.meta.seed | 0;
     this.offSurface = SURFACES[this.env.off];
+    // open world: several biomes blended by position, and a sea
+    this.biomes = b.meta.world ? b.meta.world.biomes : null;
+    this.seaLevel = b.meta.world ? b.meta.world.seaLevel : undefined;
+    this.seaSide = b.meta.world && b.meta.world.seaSide ? b.meta.world.seaSide : -1;      // which side of a coast road the sea is on (-1 = right)
+    this.offSurfaces = this.biomes ? this.biomes.map((e) => SURFACES[e.off]) : null;
     this._compile(b);
     this.chunks = new Map();
     this._lastChunk = null;
@@ -170,7 +224,7 @@ export class Track {
 
   // ---- compilation -------------------------------------------------------
   _compile(b) {
-    const P = { x: [], z: [], y: [], hw: [], surf: [], rough: [], wavy: [], L: [], R: [], bank: [], s: [], chain: [] };
+    const P = { x: [], z: [], y: [], hw: [], surf: [], rough: [], wavy: [], L: [], R: [], bank: [], s: [], chain: [], bio: [] };
     const chainStart = [];
     const chainEnd = [];
 
@@ -182,7 +236,7 @@ export class Track {
       P.hw.push(seg.width / 2); P.surf.push(SURFACES[seg.surface].id);
       P.rough.push(seg.rough); P.wavy.push(seg.wavy ?? 0.05); P.L.push(seg.L); P.R.push(seg.R);
       P.bank.push(Math.tan((seg.bank * Math.PI) / 180));
-      P.s.push(sVal); P.chain.push(chain);
+      P.s.push(sVal); P.chain.push(chain); P.bio.push(seg.biome | 0);
       if (chain === 0) heads.push(hdVal);
     };
     chainStart.push(0);
@@ -204,6 +258,11 @@ export class Track {
     chainEnd.push(nMain - 1);
     this.length = s;
     this.nMain = nMain;
+
+    // Catmull-Rom spline smoothing for main-chain path ribbon
+    P.x = catmullRomSmooth(P.x, 2, 2);
+    P.z = catmullRomSmooth(P.z, 2, 2);
+    P.y = catmullRomSmooth(P.y, 2, 2);
 
     // smooth main-chain profiles
     P.y = smoothArray(P.y, 3);
@@ -235,6 +294,10 @@ export class Track {
     this.bypasses = [];
     this.falls = [];
     this.relics = [];
+    this.links = [];
+    this.junctions = [];
+    this.tunnels = [];
+    this.landmarks = [];
     const rng = mulberry(this.seed * 7919 + 13);
     const leftOf = (i) => {
       const a = Math.max(0, i - 1), c = Math.min(nMain - 1, i + 1);
@@ -289,7 +352,7 @@ export class Track {
         P.x.push(p.x); P.z.push(p.z); P.y.push(p.y);
         P.hw.push(o.width / 2); P.surf.push(SURFACES[o.surface].id);
         P.rough.push(o.rough); P.wavy.push(o.wavy ?? 0.1); P.L.push(0); P.R.push(0); P.bank.push(0);
-        P.s.push(sv); P.chain.push(c);
+        P.s.push(sv); P.chain.push(c); P.bio.push(o.biome | 0);
       });
       chainEnd.push(P.x.length - 1);
       return c;
@@ -325,7 +388,47 @@ export class Track {
         pts.forEach((p, k) => { p.y = ys[k]; });
         addChain(pts, f);
         const end = pts[pts.length - 1];
-        this.caches.push({ x: end.x, z: end.z, reward: f.reward, name: f.name, s: f.s });
+        if (f.cache !== false) this.caches.push({ x: end.x, z: end.z, reward: f.reward, name: f.name, s: f.s });
+        this.junctions.push(f.s);
+      } else if (f.type === 'link') {
+        // a road between two points of the main route: a smooth curve that leaves each end square to the road
+        const i0 = idxS(f.sA), i1 = idxS(f.sB);
+        const ax = P.x[i0], az = P.z[i0], bx = P.x[i1], bz = P.z[i1];
+        const L = Math.hypot(bx - ax, bz - az) || 1;
+        const fa = leftOf(i0), fb = leftOf(i1);
+        const sa = f.side || ((bx - ax) * fa.lx + (bz - az) * fa.lz >= 0 ? 1 : -1);      // f.side: leave both ends on that side of the road
+        const sb = f.side || ((ax - bx) * fb.lx + (az - bz) * fb.lz >= 0 ? 1 : -1);
+        const k = L * 0.36, px = -(bz - az) / L, pz = (bx - ax) / L;
+        const c1x = ax + fa.lx * sa * k + px * f.bend, c1z = az + fa.lz * sa * k + pz * f.bend;
+        const c2x = bx + fb.lx * sb * k + px * f.bend, c2z = bz + fb.lz * sb * k + pz * f.bend;
+        const dense = [];
+        const nD = Math.max(40, Math.round(L * 2));
+        for (let q = 0; q <= nD; q++) {
+          const u = q / nD, v = 1 - u;
+          const w = f.wig * Math.sin(Math.PI * u) * (noise2(u * L / 60, f.sA * 0.01, this.seed + 401));
+          dense.push({
+            x: v * v * v * ax + 3 * v * v * u * c1x + 3 * v * u * u * c2x + u * u * u * bx + px * w,
+            z: v * v * v * az + 3 * v * v * u * c1z + 3 * v * u * u * c2z + u * u * u * bz + pz * w
+          });
+        }
+        // resample to the same 2 m spacing as the main route
+        let total = 0;
+        for (let q = 1; q < dense.length; q++) total += Math.hypot(dense[q].x - dense[q - 1].x, dense[q].z - dense[q - 1].z);
+        const nP = Math.max(4, Math.round(total / STEP));
+        const pts = [];
+        let q = 1, acc = 0, seg = Math.hypot(dense[1].x - dense[0].x, dense[1].z - dense[0].z);
+        for (let m = 0; m <= nP; m++) {
+          const want = (m / nP) * total;
+          while (q < dense.length - 1 && acc + seg < want) { acc += seg; q++; seg = Math.hypot(dense[q].x - dense[q - 1].x, dense[q].z - dense[q - 1].z); }
+          const t = seg > 0 ? Math.min(1, (want - acc) / seg) : 0, u = m / nP;
+          pts.push({
+            x: dense[q - 1].x + (dense[q].x - dense[q - 1].x) * t, z: dense[q - 1].z + (dense[q].z - dense[q - 1].z) * t,
+            y: P.y[i0] + (P.y[i1] - P.y[i0]) * smoothstep(0, 1, u) + f.dy * Math.sin(Math.PI * u)
+          });
+        }
+        const c = addChain(pts, { ...f, biome: f.biome ?? P.bio[i0] });
+        this.links.push({ name: f.name, start: chainStart[c], n: pts.length, sA: f.sA, sB: f.sB });
+        this.junctions.push(f.sA, f.sB);
       }
     }
 
@@ -335,17 +438,26 @@ export class Track {
     this.PX = Float64Array.from(P.x); this.PZ = Float64Array.from(P.z); this.PY = Float64Array.from(P.y);
     this.HW = Float32Array.from(P.hw); this.SURF = Uint8Array.from(P.surf); this.ROUGH = Float32Array.from(P.rough); this.WAVY = Float32Array.from(P.wavy);
     this.SL = Float32Array.from(P.L); this.SR = Float32Array.from(P.R); this.BANK = Float32Array.from(P.bank);
-    this.S = Float32Array.from(P.s); this.CHAIN = Uint8Array.from(P.chain);
+    this.S = Float32Array.from(P.s); this.CHAIN = Uint8Array.from(P.chain); this.BIO = Uint8Array.from(P.bio);
     this.chainStart = chainStart; this.chainEnd = chainEnd;
     this.TX = new Float32Array(n); this.TZ = new Float32Array(n);
     this.BUCKET = new Int32Array(n);
     for (let c = 0; c < chainStart.length; c++) {
-      for (let i = chainStart[c]; i <= chainEnd[c]; i++) {
-        const a = Math.max(chainStart[c], i - 1), d = Math.min(chainEnd[c], i + 1);
-        const tx = this.PX[d] - this.PX[a], tz = this.PZ[d] - this.PZ[a];
+      const cStart = chainStart[c], cEnd = chainEnd[c];
+      for (let i = cStart; i <= cEnd; i++) {
+        let tx, tz;
+        if (i >= cStart + 2 && i <= cEnd - 2) {
+          // 4th-order Catmull-Rom tangent stencil: continuous C1 tangents
+          tx = (-this.PX[i + 2] + 8 * this.PX[i + 1] - 8 * this.PX[i - 1] + this.PX[i - 2]) / 12;
+          tz = (-this.PZ[i + 2] + 8 * this.PZ[i + 1] - 8 * this.PZ[i - 1] + this.PZ[i - 2]) / 12;
+        } else {
+          const a = Math.max(cStart, i - 1), d = Math.min(cEnd, i + 1);
+          tx = this.PX[d] - this.PX[a];
+          tz = this.PZ[d] - this.PZ[a];
+        }
         const l = Math.hypot(tx, tz) || 1;
         this.TX[i] = tx / l; this.TZ[i] = tz / l;
-        this.BUCKET[i] = c * 100000 + Math.floor((i - chainStart[c]) / BUCKET);
+        this.BUCKET[i] = c * 100000 + Math.floor((i - cStart) / BUCKET);
       }
     }
     this.hash = new Map();
@@ -366,7 +478,20 @@ export class Track {
         cx.push(P.x[i] + fr.lx * side * 95); cz.push(P.z[i] + fr.lz * side * 95); cy.push(P.y[i] + amt);
       }
     }
+    // link roads shape the land they cross too
+    for (const l of this.links) for (let i = l.start + 15; i < l.start + l.n - 10; i += 30) { cx.push(P.x[i]); cz.push(P.z[i]); cy.push(P.y[i]); }
     this.CX = Float64Array.from(cx); this.CZ = Float64Array.from(cz); this.CY = Float64Array.from(cy);
+    if (this.biomes) {
+      // area anchors: every 24 m of every road, with the road's direction and height there (the coast needs both)
+      const ax = [], az = [], ab = [], atx = [], atz = [], ay = [], am = [];
+      for (let c = 0; c < chainStart.length; c++) {
+        for (let i = chainStart[c]; i <= chainEnd[c]; i += 12) {
+          ax.push(P.x[i]); az.push(P.z[i]); ab.push(P.bio[i]); atx.push(this.TX[i]); atz.push(this.TZ[i]); ay.push(P.y[i]); am.push(c === 0 ? 1 : 0);
+        }
+      }
+      this.AX = Float64Array.from(ax); this.AZ = Float64Array.from(az); this.AB = Uint8Array.from(ab);
+      this.ATX = Float32Array.from(atx); this.ATZ = Float32Array.from(atz); this.AY = Float32Array.from(ay); this.AM = Uint8Array.from(am);
+    }
 
     // remaining features
     for (const f of b.features) {
@@ -374,6 +499,11 @@ export class Track {
         this.checkpoints.push({ s: f.s, name: f.name });
       } else if (f.type === 'note') {
         this.notes.push({ s: f.s, text: f.text });
+      } else if (f.type === 'tunnel') {
+        this.tunnels.push({ s0: f.s0, s1: f.s1, i0: idxS(f.s0), i1: idxS(f.s1) });
+      } else if (f.type === 'landmark') {
+        const p = posAt(f.s, f.side);
+        this.landmarks.push({ id: f.id, name: f.name, kind: f.kind, reward: f.reward, r: f.r, s: f.s, x: p.x + p.fr.lx * f.side * f.off, z: p.z + p.fr.lz * f.side * f.off, heading: Math.atan2(p.fr.tx, p.fr.tz) });
       } else if (f.type === 'patch') {
         this.patches.push({ s0: f.s0, s1: f.s1, f0: f.f0, f1: f.f1, surface: SURFACES[f.surf] });
       } else if (f.type === 'fall') {
@@ -428,18 +558,83 @@ export class Track {
     this.finishS = this.length - 12;
     this.startS = 8;
 
-    this.obHash = new Map();
-    for (const o of this.obstacles) {
-      const reach = o.type === 'log' ? o.len / 2 + o.r : o.r;
-      for (let gx = Math.floor((o.x - reach) / OB_CELL); gx <= Math.floor((o.x + reach) / OB_CELL); gx++) {
-        for (let gz = Math.floor((o.z - reach) / OB_CELL); gz <= Math.floor((o.z + reach) / OB_CELL); gz++) {
-          const k = key2(gx, gz);
-          let arr = this.obHash.get(k);
-          if (!arr) this.obHash.set(k, (arr = []));
-          arr.push(o);
-        }
+    this.layer = null;
+    this.solidHash = new Map();
+    this._hashObstacles();
+  }
+
+  // ---- generated obstacle layer (core/obstacles.js) ------------------------------
+  _hashInto(map, o, reach) {
+    for (let gx = Math.floor((o.x - reach) / OB_CELL); gx <= Math.floor((o.x + reach) / OB_CELL); gx++) {
+      for (let gz = Math.floor((o.z - reach) / OB_CELL); gz <= Math.floor((o.z + reach) / OB_CELL); gz++) {
+        const k = key2(gx, gz);
+        let arr = map.get(k);
+        if (!arr) map.set(k, (arr = []));
+        arr.push(o);
       }
     }
+  }
+
+  _reach(o) { return o.type === 'log' ? o.len / 2 + o.r : o.type === 'slab' ? Math.hypot(o.len / 2, o.depth / 2) : o.r; }
+
+  _hashObstacles() {
+    this.obHash = new Map();
+    for (const o of this.obstacles) this._hashInto(this.obHash, o, this._reach(o));
+  }
+
+  /**
+   * Install (or with null, remove) a generated obstacle layer. The compiled track is cached and
+   * shared between runs, so this always strips the previous layer first.
+   */
+  setLayer(layer) {
+    if (this.layer || this.obstacles.some((o) => o.gen)) {
+      this.obstacles = this.obstacles.filter((o) => !o.gen);
+      this.patches = this.patches.filter((p) => !p.gen);
+      this.anchors = this.anchors.filter((a) => !a.gen);
+      for (const b of this.bridges) b.gaps = null;
+    }
+    this.layer = layer || null;
+    this.solidHash = new Map();
+    if (layer) {
+      for (const p of layer.patches) p.off = !!p.dyn0;
+      this.obstacles.push(...layer.obstacles);
+      this.patches.push(...layer.patches);
+      this.patches.sort((a, c) => a.s0 - c.s0);
+      this.anchors.push(...layer.anchors);
+      for (const g of layer.gaps) { const b = this.bridges[g.bridge]; (b.gaps || (b.gaps = [])).push(g); }
+      for (const o of layer.solids) { o.y = undefined; this._hashInto(this.solidHash, o, o.r); }
+    }
+    this._hashObstacles();
+  }
+
+  /** Add an obstacle while a run is in progress (a tree that has just come down). Removed with the layer. */
+  addObstacle(o) {
+    o.gen = true;
+    this.obstacles.push(o);
+    this._hashInto(this.obHash, o, this._reach(o));
+  }
+
+  /** Lateral offset (m, + = left) of the clear line the generator left through its obstacles at distance s. */
+  lineOffset(s) {
+    const H = this.layer && this.layer.hints;
+    if (!H || !H.length) return 0;
+    let ws = 0, ds = 0;
+    for (let k = 0; k < H.length; k++) {
+      const h = H[k];
+      if (h.s0 - 10 > s) break;
+      if (h.s1 + 10 < s) continue;
+      const w = smoothstep(h.s0 - 10, h.s0, s) * smoothstep(h.s1 + 10, h.s1, s);
+      ws += w; ds += w * h.d;
+    }
+    return ws > 1 ? ds / ws : ds;
+  }
+
+  /** Call fn(solid) for the layer's solid blocks near (x,z). */
+  solidsNear(x, z, fn) {
+    if (!this.solidHash.size) return;
+    const arr = this.solidHash.get(key2(Math.floor(x / OB_CELL), Math.floor(z / OB_CELL)));
+    if (!arr) return;
+    for (let k = 0; k < arr.length; k++) fn(arr[k]);
   }
 
   // ---- raw analytic terrain ---------------------------------------------
@@ -471,7 +666,7 @@ export class Track {
     }
 
     const seed = this.seed;
-    const env = this.env;
+    const env = this._envP || this.env;
     const hills = fbm(x / 230, z / 230, seed + 7, 3) * env.hillAmp;
     const detail = fbm(x / 11, z / 11, seed + 3, 2) * env.detailAmp;
     const rn = noise2(x / 1.9, z / 1.9, seed + 11) * 0.7 + noise2(x / 4.3, z / 4.3, seed + 12) * 0.5;
@@ -574,6 +769,10 @@ export class Track {
       const LS = 8, LN = 6;
       const lat = this._lat || (this._lat = new Float64Array(LN * LN));
       for (let j = 0; j < LN; j++) for (let i = 0; i < LN; i++) lat[j * LN + i] = this._macroBase(x0 + i * LS, z0 + j * LS);
+      // open world: biome weights and the sea drop on a 4 m lattice
+      const BL = this.biomes ? this._biomeLattice(x0, z0) : null;
+      const bio = BL ? new Uint8Array(CW * CW) : null, bio2 = BL ? new Uint8Array(CW * CW) : null, bt = BL ? new Float32Array(CW * CW) : null;
+      const NB = BL ? this.biomes.length : 0, wv = BL ? BL.tmp : null, EP = BL ? BL.env : null;
       this._mbUse = true;
       for (let j = 0; j < CW; j++) {
         const fj = j / LS, j0 = Math.min(LN - 2, Math.floor(fj)), tj = fj - j0;
@@ -581,18 +780,99 @@ export class Track {
           const fi = i / LS, i0 = Math.min(LN - 2, Math.floor(fi)), ti = fi - i0;
           const a = lat[j0 * LN + i0], b = lat[j0 * LN + i0 + 1], c = lat[(j0 + 1) * LN + i0], d = lat[(j0 + 1) * LN + i0 + 1];
           this._mbVal = a + (b - a) * ti + (c - a) * tj + (a - b - c + d) * ti * tj;
-          const o = this._eval(x0 + i, z0 + j);
           const q = j * CW + i;
-          h[q] = o.h; e[q] = o.e; idx[q] = o.idx;
+          let drop = 0;
+          if (BL) {
+            const gi = i / 4, gj = j / 4, bi = Math.min(BL.n - 2, Math.floor(gi)), bj = Math.min(BL.n - 2, Math.floor(gj)), u = gi - bi, v = gj - bj;
+            const k00 = bj * BL.n + bi, k10 = k00 + 1, k01 = k00 + BL.n, k11 = k01 + 1;
+            const w00 = (1 - u) * (1 - v), w10 = u * (1 - v), w01 = (1 - u) * v, w11 = u * v;
+            drop = BL.drop[k00] * w00 + BL.drop[k10] * w10 + BL.drop[k01] * w01 + BL.drop[k11] * w11;
+            let b1 = 0, b2 = 0, m1 = -1, m2 = -1, hill = 0, det = 0, ro = 0, wa = 0;
+            for (let m = 0; m < NB; m++) {
+              const w = BL.w[k00 * NB + m] * w00 + BL.w[k10 * NB + m] * w10 + BL.w[k01 * NB + m] * w01 + BL.w[k11 * NB + m] * w11;
+              wv[m] = w;
+              if (w > m1) { m2 = m1; b2 = b1; m1 = w; b1 = m; } else if (w > m2) { m2 = w; b2 = m; }
+              const E = this.biomes[m];
+              hill += w * E.hillAmp; det += w * E.detailAmp; ro += w * E.offRough; wa += w * E.offWavy;
+            }
+            bio[q] = b1; bio2[q] = b2; bt[q] = m2 > 0 ? m2 / (m1 + m2) : 0;
+            EP.hillAmp = hill; EP.detailAmp = det; EP.offRough = ro; EP.offWavy = wa;
+            this._envP = EP;
+          }
+          const o = this._eval(x0 + i, z0 + j);
+          h[q] = o.h - drop; e[q] = o.e; idx[q] = o.idx;
         }
       }
       this._mbUse = false;
-      this._mbUse = false;
-      ch = { cx, cz, h, e, idx, props: null };
+      this._envP = null;
+      ch = { cx, cz, h, e, idx, props: null, bio, bio2, bt };
       this.chunks.set(k, ch);
     }
     this._lastKey = k; this._lastChunk = ch;
     return ch;
+  }
+
+  /**
+   * Area weights and the drop into the sea for one chunk, on a 4 m lattice.
+   * An area's weight falls off with the distance to its nearest road anchor (the position is
+   * warped by noise so borders wander). The sea: beside a coast road, on its sea side only, the
+   * land slopes down below sea level - but never within 25 m of any road, so no road, side
+   * trail or bypass is ever cut by it.
+   */
+  _biomeLattice(x0, z0) {
+    const NB = this.biomes.length, n = 10;
+    const L = this._bl || (this._bl = { n, w: new Float32Array(n * n * NB), drop: new Float32Array(n * n), d: new Float64Array(NB), tmp: new Float32Array(NB), env: { hillAmp: 0, detailAmp: 0, offRough: 0, offWavy: 0 }, near: [] });
+    const { AX, AZ, AB, ATX, ATZ, AY, AM } = this;
+    const sea = this.seaLevel, side = this.seaSide;
+    const mx = x0 + 17, mz = z0 + 17, near = L.near;
+    near.length = 0;
+    for (let k = 0; k < AX.length; k++) if (Math.abs(AX[k] - mx) < 520 && Math.abs(AZ[k] - mz) < 520) near.push(k);
+    if (!near.length) for (let k = 0; k < AX.length; k += 3) near.push(k);
+    const seed = this.seed, d = L.d;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const x = x0 + i * 4, z = z0 + j * 4;
+        const wx = x + 34 * noise2(x / 110, z / 110, seed + 71), wz = z + 34 * noise2(x / 110, z / 110, seed + 72);
+        d.fill(1e9);
+        let f = 1e9, dmin = 1e9, dAny = 1e9, depth = 0, ramp = 110;
+        for (let q = 0; q < near.length; q++) {
+          const k = near[q], b = AB[k];
+          const dist = Math.hypot(AX[k] - wx, AZ[k] - wz);
+          if (dist < d[b]) d[b] = dist;
+          if (dist < dmin) dmin = dist;
+          const ex = x - AX[k], ez = z - AZ[k], dt = Math.hypot(ex, ez);
+          if (dt < dAny) dAny = dt;
+          if (sea !== undefined && AM[k] && this.biomes[b].sea && (ex * ATZ[k] - ez * ATX[k]) * side > 0) {
+            const g = dt - this.biomes[b].shore;
+            if (g < f) { f = g; depth = AY[k] - sea + 7; ramp = this.biomes[b].shoreRamp || 110; }
+          }
+        }
+        let sum = 0;
+        const o = (j * n + i) * NB;
+        for (let m = 0; m < NB; m++) { const w = d[m] > 1e8 ? 0 : Math.exp(-(d[m] - dmin) / 55); L.w[o + m] = w; sum += w; }
+        for (let m = 0; m < NB; m++) L.w[o + m] /= sum || 1;
+        L.drop[j * n + i] = f > 1e8 ? 0 : (smoothstep(0, ramp, f) * depth + Math.max(0, f - ramp) * 0.3) * smoothstep(25, 80, dAny);
+      }
+    }
+    return L;
+  }
+
+  /** Open world: the environment that dominates at (x,z). */
+  envAt(x, z) {
+    if (!this.biomes) return this.env;
+    const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
+    const ch = this.getChunk(cx, cz);
+    return this.biomes[ch.bio[(Math.min(CHUNK, Math.round(z - cz * CHUNK)) + 1) * CW + Math.min(CHUNK, Math.round(x - cx * CHUNK)) + 1]];
+  }
+
+  /** Nearest road point of any chain: { x, z, y, heading, i } (free-roam recovery, spawning). */
+  nearestRoad(x, z) {
+    let best = 0, bd = 1e18;
+    for (let i = 0; i < this.n; i += 2) {
+      const dx = x - this.PX[i], dz = z - this.PZ[i], d2 = dx * dx + dz * dz;
+      if (d2 < bd) { bd = d2; best = i; }
+    }
+    return { x: this.PX[best], z: this.PZ[best], y: this.groundAt(this.PX[best], this.PZ[best], 1e9), heading: Math.atan2(this.TX[best], this.TZ[best]), i: best, dist: Math.sqrt(bd) };
   }
 
   /** Bare terrain height (triangle-exact on the 1 m grid, matches the rendered mesh). */
@@ -615,13 +895,24 @@ export class Track {
   bumpAt(x, z) {
     const arr = this.obHash.get(key2(Math.floor(x / OB_CELL), Math.floor(z / OB_CELL)));
     if (!arr) return 0;
-    let best = 0;
+    let best = 0, low = 0;
     for (let k = 0; k < arr.length; k++) {
       const o = arr[k];
       const dx = x - o.x, dz = z - o.z;
       if (o.type === 'rock') {
         const u2 = (dx * dx + dz * dz) / (o.r * o.r);
         if (u2 < 1) { const h = o.h * (1 - u2); if (h > best) best = h; }
+      } else if (o.type === 'slab') {
+        // a flat-topped block lying across the road with ramped edges
+        const t = Math.abs(dx * o.ax + dz * o.az), u = Math.abs(dx * o.az - dz * o.ax);
+        if (t < o.len / 2 && u < o.depth / 2) {
+          const h = o.h * Math.min(1, (o.depth / 2 - u) / o.ramp) * Math.min(1, (o.len / 2 - t) / 0.2);
+          if (h > best) best = h;
+        }
+      } else if (o.type === 'hole') {
+        // a pothole: a bowl below the road surface
+        const u2 = (dx * dx + dz * dz) / (o.r * o.r);
+        if (u2 < 1) { const h = -o.h * (1 - u2 * u2); if (h < low) low = h; }
       } else {
         const t = dx * o.ax + dz * o.az;
         if (Math.abs(t) > o.len / 2) continue;
@@ -629,7 +920,7 @@ export class Track {
         if (u < o.r * 0.95) { const h = Math.sqrt(o.r * o.r - u * u) + o.r * 0.55; if (h > best) best = h; }
       }
     }
-    return best;
+    return best > 0 ? best : low;
   }
 
   /** Bridge deck height at (x,z) or -Infinity. */
@@ -641,6 +932,13 @@ export class Track {
       if (t < -0.02 || t > 1.02) continue;
       const d = Math.abs(((x - b.x0) * sz - (z - b.z0) * sx) / b.len);
       if (d > b.half) continue;
+      if (b.gaps) {
+        // missing planks: no deck on one side of the bridge for a short stretch
+        const sd = ((x - b.x0) * sz - (z - b.z0) * sx) / b.len;   // + = left of travel
+        let open = false;
+        for (let g = 0; g < b.gaps.length; g++) { const q = b.gaps[g]; if (t > q.t0 && t < q.t1 && sd * q.side > q.d0) { open = true; break; } }
+        if (open) continue;
+      }
       return b.y0 + (b.y1 - b.y0) * Math.min(1, Math.max(0, t));
     }
     return -Infinity;
@@ -678,6 +976,12 @@ export class Track {
     const ch = this.getChunk(cx, cz);
     const ix = Math.min(CHUNK, Math.round(x - cx * CHUNK)), iz = Math.min(CHUNK, Math.round(z - cz * CHUNK));
     const i = ch.idx[(iz + 1) * CW + ix + 1];
+    let sea = -1e9;
+    if (this.biomes) {
+      const qq = (iz + 1) * CW + ix + 1;
+      sq.surface = this.offSurfaces[ch.bio[qq]];
+      if (ch.h[qq] < this.seaLevel) { sea = this.seaLevel; sq.waterY = sea; sq.surface = SURFACES.riverbed; }   // sea, lagoons
+    }
     if (i < 0) return sq;
     const dx = x - this.PX[i], dz = z - this.PZ[i];
     const tx = this.TX[i], tz = this.TZ[i];
@@ -689,7 +993,7 @@ export class Track {
     if (main) {
       for (let k = 0; k < this.water.length; k++) {
         const w = this.water[k];
-        if (s >= w.s0 && s <= w.s1) { sq.waterY = w.level; break; }
+        if (s >= w.s0 && s <= w.s1) { sq.waterY = Math.max(sea, w.level); break; }
       }
     }
     if (Math.abs(d) <= hw + 0.5) {
@@ -703,7 +1007,7 @@ export class Track {
       for (let k = 0; k < this.patches.length; k++) {
         const p = this.patches[k];
         if (p.s0 > s) break;
-        if (s <= p.s1 && f >= p.f0 && f <= p.f1) { sq.surface = p.surface; sq.onRoad = true; break; }
+        if (s <= p.s1 && f >= p.f0 && f <= p.f1 && !p.off) { sq.surface = p.surface; sq.onRoad = true; break; }
       }
     }
     return sq;
@@ -713,7 +1017,7 @@ export class Track {
   propsFor(cx, cz) {
     const ch = this.getChunk(cx, cz);
     if (ch.props) return ch.props;
-    const env = this.env;
+    const env0 = this.env, B = this.biomes;
     const props = [];
     const G = 4; // 4 m placement cells
     const nG = CHUNK / G;
@@ -727,26 +1031,87 @@ export class Track {
         const lx = Math.round(x - cx * CHUNK), lz = Math.round(z - cz * CHUNK);
         const q = (lz + 1) * CW + lx + 1;
         const e = ch.e[q];
-        if (e < 2.2) continue;
+        // open world: the biome here (near a border, sometimes the neighbour's) decides what grows
+        const bi = B ? (rand2(wx, wz, seed + 507) < ch.bt[q] ? ch.bio2[q] : ch.bio[q]) : 0;
+        const env = B ? B[bi] : env0;
+        const minE = env.treeClearance || 2.2;
+        if (e < minE) continue;
         const y = this.heightAt(x, z);
         const slope = Math.abs(ch.h[q + 1] - ch.h[q - 1]) + Math.abs(ch.h[q + CW] - ch.h[q - CW]);
-        const mask = 0.55 + 0.45 * fbm(x / 60, z / 60, seed + 91, 2);
+        // Clumping pattern: dense tree clusters with natural woodland clearings
+        const clumping = fbm(x / 45, z / 45, seed + 91, 3);
+        const mask = 0.55 + 0.45 * clumping + (clumping > 0.1 ? 0.25 : -0.12);
         let type = null;
         if (r0 < env.trees * mask && slope < 1.6) type = 'tree';
         else if (r0 > 1 - env.boulders) type = 'boulder';
         else if (r0 > 0.5 && r0 < 0.5 + env.bushes * 0.5 && slope < 1.6) type = 'bush';
         if (!type) continue;
-        if (this.water.length || this.sidePatches) { const sq = this.surfaceAt(x, z); if (sq.waterY > y - 0.3 || sq.surface.hot) continue; }
+        if (this.water.length || this.sidePatches || B) { const sq = this.surfaceAt(x, z); if (sq.waterY > y - 0.3 || sq.surface.hot) continue; }
         const sc = 0.75 + rand2(wx, wz, seed + 504) * 0.7;
-        const p = { type, x, z, y, scale: sc, rot: rand2(wx, wz, seed + 505) * 6.28, v: rand2(wx, wz, seed + 506), r: 0 };
+        const p = { type, x, z, y, scale: sc, rot: rand2(wx, wz, seed + 505) * 6.28, v: rand2(wx, wz, seed + 506), r: 0, b: bi };
         if (type === 'tree') p.r = 0.28 * sc;
         if (type === 'boulder') { p.scale = 0.7 + rand2(wx, wz, seed + 504) * 1.6; p.r = 0.8 * p.scale; }
         props.push(p);
       }
     }
+    if (B) this._buildings(cx, cz, ch, props);
     this._solidScenery(cx, cz, ch, props);
     ch.props = props;
     return props;
+  }
+
+  /**
+   * Open world: buildings for one chunk (towers downtown, sheds at the docks, houses in the
+   * villages and on farms). They stand beside the roads, square to them, on ground that is
+   * nearly level, and each gets a ring of solid colliders around its walls.
+   */
+  _buildings(cx, cz, ch, props) {
+    const seed = this.seed, G = 16, nG = CHUNK / G;
+    const first = props.length;
+    const rects = [];
+    for (let gj = 0; gj < nG; gj++) {
+      for (let gi = 0; gi < nG; gi++) {
+        const wx = cx * nG + gi, wz = cz * nG + gj;
+        const x = (wx + 0.5) * G + (rand2(wx, wz, seed + 901) - 0.5) * 4, z = (wz + 0.5) * G + (rand2(wx, wz, seed + 902) - 0.5) * 4;
+        const q = (Math.round(z - cz * CHUNK) + 1) * CW + Math.round(x - cx * CHUNK) + 1;
+        const bi = ch.bio[q], U = this.biomes[bi].urban;
+        if (!U || rand2(wx, wz, seed + 903) > U.density) continue;
+        const i = ch.idx[q], e = ch.e[q];
+        if (i < 0) continue;
+        const w = U.foot[0] + (U.foot[1] - U.foot[0]) * rand2(wx, wz, seed + 904), d = U.foot[0] + (U.foot[1] - U.foot[0]) * rand2(wx, wz, seed + 905);
+        const half = Math.hypot(w, d) / 2;
+        if (e < half + 2.5 || e > 60) continue;
+        const rot = Math.atan2(this.TX[i], this.TZ[i]), cs = Math.cos(rot), sn = Math.sin(rot);
+        const at = (lx, lz) => [x + lx * cs + lz * sn, z - lx * sn + lz * cs];
+        let y0 = 1e9, y1 = -1e9;
+        for (const [lx, lz] of [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2], [0, 0]]) {
+          const [px, pz] = at(lx, lz), hh = this.heightAt(px, pz);
+          if (hh < y0) y0 = hh;
+          if (hh > y1) y1 = hh;
+        }
+        if (y1 - y0 > 2.4 || y0 < this.seaLevel + 0.8) continue;
+        const clearOf = (list, r) => list.some((c) => Math.hypot(c.x - x, c.z - z) < half + r);
+        if (clearOf(this.relics, 7) || clearOf(this.caches, 9) || clearOf(this.anchors, 4) || clearOf(this.falls, 10)) continue;
+        const k = Math.pow(fbm(x / 150, z / 150, seed + 906, 2) * 0.5 + 0.5, 1.7) * (0.55 + 0.45 * rand2(wx, wz, seed + 907));
+        const h = U.h[0] + (U.h[1] - U.h[0]) * Math.min(1, k * 1.5);
+        props.push({ type: 'building', kind: U.kind, x, z, y: y0 - 0.4, w, d, h, rot, v: rand2(wx, wz, seed + 908), r: 0, scale: 1, b: bi });
+        rects.push({ x, z, cs, sn, w: w / 2 + 1.2, d: d / 2 + 1.2 });
+        // walls: a ring of circles just inside the footprint
+        const r = 1.25, add = (lx, lz) => { const [px, pz] = at(lx, lz); props.push({ type: 'solid', x: px, z: pz, y: this.heightAt(px, pz), scale: 1, rot: 0, v: 0, r, h: h + 1 }); };
+        const nw = Math.max(2, Math.ceil(w / 2.3)), nd = Math.max(2, Math.ceil(d / 2.3));
+        for (let a = 0; a <= nw; a++) { const lx = -w / 2 + r + ((w - 2 * r) * a) / nw; add(lx, -d / 2 + r); add(lx, d / 2 - r); }
+        for (let a = 1; a < nd; a++) { const lz = -d / 2 + r + ((d - 2 * r) * a) / nd; add(-w / 2 + r, lz); add(w / 2 - r, lz); }
+      }
+    }
+    if (!rects.length) return;
+    // nothing grows through a building
+    for (let k = first - 1; k >= 0; k--) {
+      const p = props[k];
+      for (const b of rects) {
+        const dx = p.x - b.x, dz = p.z - b.z;
+        if (Math.abs(dx * b.cs - dz * b.sn) < b.w && Math.abs(dx * b.sn + dz * b.cs) < b.d) { props.splice(k, 1); break; }
+      }
+    }
   }
 
   /**
@@ -770,6 +1135,7 @@ export class Track {
           if (Math.floor(x / CHUNK) !== cx || Math.floor(z / CHUNK) !== cz) continue;
           const q = (Math.round(z - cz * CHUNK) + 1) * CW + Math.round(x - cx * CHUNK) + 1;
           if (ch.e[q] < 6.5) continue;
+          if (this.biomes && this.biomes[ch.bio[q]].trees < 0.1) continue;      // no deadfall where there are no woods
           const slope = Math.abs(ch.h[q + 1] - ch.h[q - 1]) + Math.abs(ch.h[q + CW] - ch.h[q - CW]);
           if (slope > 1.1) continue;
           const y = this.heightAt(x, z);
@@ -858,6 +1224,22 @@ export class Track {
         for (let k = 0; k < props.length; k++) {
           const p = props[k];
           if (p.r > 0 && Math.abs(p.x - x) < 4 && Math.abs(p.z - z) < 4) fn(p);
+        }
+      }
+    }
+    if (this.solidHash.size) {
+      const g0x = Math.floor((x - 3) / OB_CELL), g1x = Math.floor((x + 3) / OB_CELL);
+      const g0z = Math.floor((z - 3) / OB_CELL), g1z = Math.floor((z + 3) / OB_CELL);
+      for (let gz = g0z; gz <= g1z; gz++) {
+        for (let gx = g0x; gx <= g1x; gx++) {
+          const arr = this.solidHash.get(key2(gx, gz));
+          if (!arr) continue;
+          for (let k = 0; k < arr.length; k++) {
+            const p = arr[k];
+            // a solid spanning two cells is listed in both: report it from its own cell only
+            if (Math.floor(p.x / OB_CELL) !== gx || Math.floor(p.z / OB_CELL) !== gz) continue;
+            if (Math.abs(p.x - x) < 4 && Math.abs(p.z - z) < 4) { if (p.y === undefined) p.y = this.heightAt(p.x, p.z); fn(p); }
+          }
         }
       }
     }

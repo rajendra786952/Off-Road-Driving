@@ -10,6 +10,9 @@ import { validateTrack } from '../src/drive/core/validate.js';
 
 const arg = process.argv[2] || 'all';
 const trace = process.argv.includes('--trace');
+// --obstacles[=easy|medium|hard|extreme] drives with the generated obstacle layer (medium by default)
+const obArg = process.argv.find((a) => a.startsWith('--obstacles'));
+const obstacles = obArg ? { difficulty: obArg.split('=')[1] || 'medium' } : undefined;
 const defs = arg === 'all' ? TRACKS : [getTrackDef(arg)];
 let totalTime = 0;
 for (const def of defs) {
@@ -18,7 +21,7 @@ for (const def of defs) {
   const problems = validateTrack(track);
   const setup = process.argv.includes('--stock') ? { vehicle: 'mountain-jeep', ups: {}, gear: {} } : def.bot;
   const params = buildParams(setup.vehicle, setup.ups, setup.gear);
-  const ss = new DriveSession(track, params);
+  const ss = new DriveSession(track, params, { obstacles });
   let next = 0;
   const res = botRun(ss, 3000, trace ? (t, s, bot) => {
     if (t >= next) {
@@ -31,7 +34,7 @@ for (const def of defs) {
   console.log(
     `${String(def.n).padStart(2)} ${def.id.padEnd(20)} ${res.finished ? 'FINISHED' : 'FAILED @' + res.s.toFixed(0)} ` +
     `len=${(res.length / 1000).toFixed(2)}km time=${fmtTime(res.time)} (+pen ${fmtTime(res.total)}) rec=${res.recoveries} dmg=${res.damage.toFixed(0)}% ` +
-    `fuel=${(res.fuel * 100).toFixed(0)}% avg=${(res.avgSpeed * 3.6).toFixed(0)}km/h max=${(res.maxSpeed * 3.6).toFixed(0)}km/h cps=${ss.cpNext}/${track.checkpoints.length} ` +
+    `fuel=${(res.fuel * 100).toFixed(0)}%${ss.hazards ? (({ cleared, clean, total, strikes }) => ` ch=${cleared}/${total} clean=${clean} strikes=${strikes}`)(ss.hazards.summary()) : ''} avg=${(res.avgSpeed * 3.6).toFixed(0)}km/h max=${(res.maxSpeed * 3.6).toFixed(0)}km/h cps=${ss.cpNext}/${track.checkpoints.length} ` +
     `[${((Date.now() - t0) / 1000).toFixed(1)}s]${problems.length ? '\n   ! ' + problems.join('\n   ! ') : ''}`
   );
 }

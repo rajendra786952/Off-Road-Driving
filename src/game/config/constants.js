@@ -24,3 +24,31 @@ export const COIN_VALUE = 5;
 // Open the game with ?debug=1 to draw physics shapes and an FPS counter.
 export const DEBUG =
   typeof location !== 'undefined' && new URLSearchParams(location.search).get('debug') === '1';
+
+// Toggle variable to unlock all tracks and regions:
+// Set to true to unlock all tracks and regions across the game.
+// Set to false to enforce standard career and expedition progression.
+// Can also be dynamically overridden via URL query param: ?unlockTracks=1 or ?unlockTracks=0
+const URL_UNLOCK_PARAM =
+  typeof location !== 'undefined'
+    ? (new URLSearchParams(location.search).get('unlockTracks') ?? new URLSearchParams(location.search).get('unlock'))
+    : null;
+
+export const UNLOCK_ALL_TRACKS =
+  URL_UNLOCK_PARAM !== null
+    ? (URL_UNLOCK_PARAM === '1' || URL_UNLOCK_PARAM === 'true')
+    : true;
+
+// Toggle variable to enable or disable the 3D skybox / sky dome:
+// Set to true to render the 3D skybox (sky dome with clouds, atmospheric shader & HDR photographic environment).
+// Set to false to disable the skybox and render a clean solid/fog background backdrop.
+// Can also be dynamically overridden via URL query param: ?skybox=1 or ?skybox=0
+const URL_SKYBOX_PARAM =
+  typeof location !== 'undefined'
+    ? (new URLSearchParams(location.search).get('skybox') ?? new URLSearchParams(location.search).get('sky'))
+    : null;
+
+export const ENABLE_SKYBOX =
+  URL_SKYBOX_PARAM !== null
+    ? (URL_SKYBOX_PARAM === '1' || URL_SKYBOX_PARAM === 'true')
+    : false;

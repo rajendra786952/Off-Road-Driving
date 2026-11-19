@@ -2,6 +2,9 @@
 // rewards, XP, records and achievements. Unit tested in tests/drive.test.mjs.
 import { TRACK_META } from '../tracks/meta.js';
 import { REGIONS } from '../tracks/regions.js';
+import { UNLOCK_ALL_TRACKS, ENABLE_SKYBOX } from '../../game/config/constants.js';
+
+export { UNLOCK_ALL_TRACKS, ENABLE_SKYBOX };
 
 export const REGION_ORDER = ['forest', 'mud', 'rocky', 'ridge', 'snow', 'desert', 'jungle', 'volcano'];
 /** Regions outside the expedition chain: always open, their tracks unlock in order within the region. */
@@ -14,6 +17,7 @@ export function isTrackDone(save, id) { return !!(save.tracks[id] && save.tracks
 
 /** Tracks unlock in order; a region opens when every track of the previous region is done. */
 export function isTrackUnlocked(save, id) {
+  if (UNLOCK_ALL_TRACKS) return true;
   const i = trackIndex(id);
   if (i <= 0) return i === 0;
   // the first track of an open region needs nothing; the rest of it unlocks in order
@@ -21,6 +25,7 @@ export function isTrackUnlocked(save, id) {
   return isTrackDone(save, TRACK_META[i - 1].id);
 }
 export function isRegionUnlocked(save, region) {
+  if (UNLOCK_ALL_TRACKS) return true;
   if (OPEN.has(region)) return true;
   const r = REGION_ORDER.indexOf(region);
   if (r <= 0) return r === 0;
@@ -71,11 +76,23 @@ export const ACHIEVEMENTS = [
   { id: 'gold5', name: 'Podium Regular', desc: 'Earn 5 gold medals', test: (s) => Object.values(s.tracks).filter((t) => t.medal === 3).length >= 5 },
   { id: 'clean', name: 'Not a Scratch', desc: 'Finish a track with no recoveries and under 40% damage', test: (s) => s.stats.cleanRuns >= 1 },
   { id: 'caches', name: 'Explorer', desc: 'Find 10 supply caches', test: (s) => s.stats.caches >= 10 },
-  { id: 'cargo', name: 'Courier', desc: 'Finish a cargo run with the load at least 90% intact', test: (s) => (s.stats.cargoRuns || 0) >= 1 },
   { id: 'daily', name: 'Regular', desc: 'Complete 5 daily challenges', test: (s) => (s.stats.dailies || 0) >= 5 },
   { id: 'distance', name: 'Long Hauler', desc: 'Drive 100 km in expeditions', test: (s) => s.stats.distance >= 100000 }
 ];
 const DIFF_RANK = { casual: 1, standard: 2, hardcore: 3 };
+
+/**
+ * Coins for the generated obstacle challenges of one run (see core/hazards.js summary()).
+ * Scaled by the track's own reward so it matters on every track without swamping it.
+ */
+export function challengeRewards(reward, ch, mult = 1) {
+  if (!ch) return { cleared: 0, clean: 0, hard: 0, strikes: 0, total: 0 };
+  const cleared = Math.round(reward * 0.022 * ch.weight * mult);
+  const clean = Math.round(reward * 0.014 * ch.cleanWeight * mult);
+  const hard = Math.round(reward * 0.06 * ch.hardLines * mult);
+  const strikes = Math.round(reward * 0.04 * Math.min(5, ch.strikes));
+  return { cleared, clean, hard, strikes, total: cleared + clean + hard - strikes };
+}
 function regionDone(save, region) {
   const list = regionTracks(region);
   return list.length > 0 && list.every((t) => isTrackDone(save, t.id));
@@ -84,7 +101,7 @@ function regionDone(save, region) {
 /**
  * Apply a finished run to the save. Mutates `save`, returns a reward summary.
  * @param run { time, medal, stars, objectives:[{id,done}], recoveries, damage, cachesFound:boolean[], cacheRewards:number[], distance, driveTime,
- *              cargo? (0..100, cargo runs only), daily? (date string when this run is today's unfinished daily challenge), vehicle?, date? }
+ *              daily? (date string when this run is today's unfinished daily challenge), vehicle?, date? }
  */
 export function applyResult(save, trackId, run) {
   const meta = TRACK_META[trackIndex(trackId)];
@@ -108,12 +125,14 @@ export function applyResult(save, trackId, run) {
   let newRelics = 0;
   const relics = (run.relicsFound || []).map((f, i) => { const had = !!(prev.relics || [])[i]; if (f && !had) newRelics++; return had || f; });
   if (newRelics > 0) { const rc = newRelics * 80; coins += rc; lines.push({ text: `Hidden relics x${newRelics}: +${rc}`, color: '#8dff9b' }); }
-  if (mult !== 1) lines.push({ text: `${run.difficulty} difficulty: rewards x${mult}`, color: '#8fc1e3' });
-  if (run.cargo !== undefined) {
-    const cb = Math.round(meta.reward * 0.6 * (run.cargo / 100) * mult);
-    coins += cb;
-    lines.push({ text: run.cargo > 0 ? `Cargo delivered ${Math.round(run.cargo)}% intact: +${cb}` : 'Cargo destroyed: no delivery bonus', color: run.cargo >= 70 ? '#8dff9b' : '#ffcf8f' });
+  if (run.challenges && run.challenges.total > 0) {
+    const ch = run.challenges, cr = challengeRewards(meta.reward, ch, mult);
+    if (cr.cleared > 0) { coins += cr.cleared; lines.push({ text: `Obstacle challenges ${ch.cleared}/${ch.total}: +${cr.cleared}`, color: '#8dff9b' }); }
+    if (cr.clean > 0) { coins += cr.clean; lines.push({ text: `Clean through ${ch.clean} of them: +${cr.clean}`, color: '#8dff9b' }); }
+    if (cr.hard > 0) { coins += cr.hard; lines.push({ text: `Hard line x${ch.hardLines} (no bypass): +${cr.hard}`, color: '#8dff9b' }); }
+    if (cr.strikes > 0) { const pen = Math.min(coins, cr.strikes); coins -= pen; lines.push({ text: `Wildlife strikes x${ch.strikes}: -${pen}`, color: '#ff9b8f' }); }
   }
+  if (mult !== 1) lines.push({ text: `${run.difficulty} difficulty: rewards x${mult}`, color: '#8fc1e3' });
   if (run.daily) {
     const db = Math.round(meta.reward * 1.0) + 500;
     coins += db;
@@ -154,8 +173,8 @@ export function applyResult(save, trackId, run) {
   st.caches += newCaches;
   st.relics = (st.relics || 0) + newRelics;
   if (run.difficultyId === 'hardcore') st.hardcore = (st.hardcore || 0) + 1;
+  if (run.challenges) { st.challenges = (st.challenges || 0) + run.challenges.cleared; st.cleanChallenges = (st.cleanChallenges || 0) + run.challenges.clean; }
   if (run.night) st.nightRuns = (st.nightRuns || 0) + 1;
-  if (run.cargo !== undefined && run.cargo >= 90) st.cargoRuns = (st.cargoRuns || 0) + 1;
   if (run.daily) st.dailies = (st.dailies || 0) + 1;
   if (first) st.tracksDone++;
   if (run.medal === 3 && prev.medal < 3) st.golds++;

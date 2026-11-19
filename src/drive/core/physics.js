@@ -86,6 +86,7 @@ export class Vehicle4x4 {
     this.gear = 1;
     this.waterDepth = 0;
     this.winchTension = 0;
+    this.dyn = null;       // Hazards instance for this run (set by the session)
     this._n = [0, 1, 0];
     this._F = [0, 0, 0];
     this._T = [0, 0, 0];
@@ -384,6 +385,9 @@ export class Vehicle4x4 {
         this._addForce(nx * Fn, 0, nz * Fn, px, py, pz);
       });
     }
+
+    // ---- loose and moving obstacles (cones, crates, rocks, animals), side wind
+    if (this.dyn) this.dyn.collide(this, dt);
 
     // ---- water + air drag
     const sp = Math.hypot(v[0], v[1], v[2]);

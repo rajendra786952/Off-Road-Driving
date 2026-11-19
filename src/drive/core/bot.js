@@ -21,6 +21,9 @@ export class BotDriver {
     const look = 5 + Math.abs(v) * 0.8;
     const j = Math.min(tr.nMain - 1, i + Math.round(look / 2));
     let tx = tr.PX[j], tz = tr.PZ[j];
+    // follow the clear line the obstacle generator left through its obstacles
+    const off = tr.layer ? tr.lineOffset(tr.S[j]) : 0;
+    if (off) { tx += tr.TZ[j] * off; tz -= tr.TX[j] * off; }
     // take a signposted bypass when the main line is beyond the recommended setup
     for (const b of tr.bypasses) {
       if (b.prefer && ss.s > b.s0 - 12 && ss.s < b.s1 - 4) {
@@ -53,7 +56,10 @@ export class BotDriver {
       for (const b of tr.bridges) if (tr.S[q] > b.s0 - 6 && tr.S[q] < b.s1 + 2) lim = Math.min(lim, 2.2 + b.half);
       // obstacles on the line ahead: crawl over them
       if (k <= 9) {
-        const bh = Math.max(tr.bumpAt(veh.p[0] + veh.R[2] * (dist + 1.5), veh.p[2] + veh.R[8] * (dist + 1.5)), tr.bumpAt(tr.PX[q], tr.PZ[q]));
+        const oq = tr.layer ? tr.lineOffset(tr.S[q]) : 0;
+        const bh = Math.max(tr.bumpAt(veh.p[0] + veh.R[2] * (dist + 1.5), veh.p[2] + veh.R[8] * (dist + 1.5)), tr.bumpAt(tr.PX[q] + tr.TZ[q] * oq, tr.PZ[q] - tr.TX[q] * oq));
+        // squeezing past a blocker: the clear line leaves the middle of the road
+        if (Math.abs(oq) > 0.3) lim = Math.min(lim, 3.2);
         if (bh > 0.08) { lim = Math.min(lim, bh > 0.3 ? 1.5 : 2.3); if (dist < 10) hard = true; }
       }
       // allow for braking distance at ~3 m/s^2
@@ -67,6 +73,12 @@ export class BotDriver {
     if (soft) { vt = Math.min(vt, 6.5); hard = true; }
     if (slick) vt = Math.min(vt, 6);
     if (veh.waterDepth > 0.15) { vt = Math.min(vt, 4); hard = true; }
+    // potholes: ease over them
+    if (tr.layer && (tr.bumpAt(veh.p[0] + veh.R[2] * 3, veh.p[2] + veh.R[8] * 3) < -0.06 || tr.bumpAt(veh.p[0], veh.p[2]) < -0.06)) vt = Math.min(vt, 3.2);
+    // animals on the road, rocks coming down, a tree falling: stop short and wait
+    const threat = ss.hazards ? ss.hazards.threatAhead() : null;
+    if (threat) vt = Math.min(vt, Math.max(0, (threat.dist - 7) * 0.45));
+    this.yield = threat ? (this.yield || 0) + dt : 0;
     if (veh.bellyDrag > 0.01 || tr.bumpAt(veh.p[0], veh.p[2]) > 0.08 || tr.bumpAt(veh.p[0] - veh.R[2] * 1.3, veh.p[2] - veh.R[8] * 1.3) > 0.08) { vt = Math.min(vt, 2.3); hard = true; }
 
     let gas = 0, brake = 0;
@@ -88,7 +100,7 @@ export class BotDriver {
     if (this.watch > 5) {
       const moved = ss.s - this.lastS;
       this.lastS = ss.s; this.watch = 0;
-      if (moved < 1.0 && this.mode === 'drive') { this.mode = this.tries % 2 === 0 ? 'push' : 'reverse'; this.timer = 0; this.tries++; }
+      if (moved < 1.0 && this.mode === 'drive' && !(threat && this.yield < 25)) { this.mode = this.tries % 2 === 0 ? 'push' : 'reverse'; this.timer = 0; this.tries++; }
       else if (moved > 4) this.tries = 0;
     }
     if (this.mode === 'push') {

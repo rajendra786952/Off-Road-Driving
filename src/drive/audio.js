@@ -147,6 +147,14 @@ export class DriveAudio {
   cache() { [880, 1175, 1568].forEach((f, i) => this._tone(f, 0, 0.14, 0.11, 'sine', i * 0.07)); }
   click() { this._tone(520, 700, 0.07, 0.09); }
   winch() { this._tone(180, 170, 0.12, 0.05, 'square'); }
+  // generated obstacles
+  rumble() { this._burst(90, 2.4, 0.5); this._tone(52, 34, 1.8, 0.22, 'sawtooth'); }                    // rockfall, boulder, landslide
+  crack() { this._burst(2200, 0.16, 0.3, 'bandpass'); this._tone(240, 90, 0.12, 0.12, 'square'); }      // wood snapping
+  creak() { this._tone(160, 60, 1.6, 0.16, 'sawtooth'); this._burst(600, 1.2, 0.12, 'bandpass'); }      // a tree going over
+  gust() { this._burst(500, 2.2, 0.2, 'bandpass'); }
+  flock() { this._burst(3800, 0.7, 0.12, 'highpass'); }
+  bonus() { [660, 880].forEach((f, i) => this._tone(f, 0, 0.12, 0.09, 'sine', i * 0.08)); }
+  alarm() { [392, 330].forEach((f, i) => this._tone(f, 0, 0.16, 0.12, 'square', i * 0.16)); }
 
   dispose() {
     if (!this.ctx) return;

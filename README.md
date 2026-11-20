@@ -11,6 +11,10 @@
 > the React shell is DOM, the 3D drive has its own WebGL canvas, and Phaser is asleep and hidden unless
 > Classic 2D is open (`src/main.js`).
 
+> **React Native version of the 2D game:** `mobile/` holds a separate Expo / React Native app that rebuilds
+> the classic 2D hill-climb natively with 100 levels and 100 vehicles. It is named **Offroad Racing 4x4**. See [mobile/README.md](mobile/README.md).
+> It does not change anything described below.
+
 ## Quick start
 
 Requires **Node 20+**.

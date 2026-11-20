@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Offroad Racing 4x4",
+    "slug": "offroad-racing-4x4",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.offroadracing4x4.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#e2541f",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.offroadracing4x4.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-audio",
+      "expo-screen-orientation",
+      "expo-asset"
+    ],
+    "backgroundColor": "#0e161d"
+  }
+}

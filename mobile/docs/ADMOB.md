@@ -8,6 +8,34 @@ All ad code lives in `src/ads/`; screens never call the SDK directly.
 > simulated ads. It has **not yet run on a phone**: no APK could be built on the development machine (the
 > drive was full). The first device build is the real test of the SDK calls. See "First device build" below.
 
+## Expo Go shows no ads
+
+AdMob needs native code that exists only in a build of this app. Expo Go, and any build made before the
+library was added, do not have it. The game detects that (`src/ads/native.ts`) and runs normally with the
+ads layer switched off: no banners, no interstitials, and the "watch an ad" buttons stay hidden. It no
+longer stops with `'RNGoogleMobileAdsModule' could not be found`.
+
+To test ads, install a build of the app itself: `npx expo run:android` with a phone connected, or
+`eas build --profile development --platform android`.
+
+## If no ads appear
+
+Open **Settings -> ADS** in the game. It shows whether the ads code is in the build, what the consent service
+answered, whether the ads service started, which units are requested (test or your own), and the last result
+or error for the banner, interstitial and rewarded ad. The **AD INSPECTOR** button opens Google's own tool.
+
+Common answers:
+
+- *Ads code in this build: no* - this is Expo Go or an old build. Ads need a build of the app.
+- *failed: ... no-fill* on your own units - normal for a new AdMob app or ad unit. Google serves few or no
+  ads until the app is reviewed and the unit has been live for some hours. Test units always fill.
+- Units say *test* in a cloud build although `.env` has your IDs - `.env` is not uploaded to EAS. Add the
+  variables to the EAS environment (`eas env:create`), or keep test ads for internal builds.
+
+Ads are held back only when consent is definitely required and not yet given. An "unknown" answer from the
+consent service (for example because no consent message has been created for the app ID) no longer switches
+ads off; that was the reason the first working APK showed none.
+
 ## 1. Where the IDs go
 
 Nothing is hardcoded. IDs are read from `.env` (ignored by git; `.env.example` lists every setting).
@@ -98,6 +126,7 @@ src/ads/
   BannerAd.tsx           the banner component
   rewards.ts             watchAdForReward(): show, then grant only if earned, then confirm
   sdk.ts                 consent (Google UMP), request configuration, SDK initialise
+  native.ts              loads the ads library only when its native module is in the build
   *.web.ts(x)            browser build: no SDK; development builds simulate ads to test the flows
 app.config.js            injects the app IDs into the native projects
 .env.example             every setting, documented
@@ -114,6 +143,13 @@ app.config.js            injects the app IDs into the native projects
   create a consent message in the AdMob console (Privacy & messaging), or no ads will be served there.
 - **Audience.** If the store listing targets children, set `EXPO_PUBLIC_ADMOB_CHILD_DIRECTED=1` (ads are then
   requested as child-directed and rated G) and follow Google Play's Families policy.
+
+## Release builds and R8
+
+The Google Mobile Ads SDK brings in WorkManager, which opens a Room database by class name when the app
+starts. With R8 code shrinking on (Expo's default for release builds) that class was removed and the app
+closed immediately with `Failed to create an instance of androidx.work.impl.WorkDatabase`. `app.config.js`
+now turns shrinking off and adds keep rules for WorkManager, Room, the ads SDK, Skia and Reanimated.
 
 ## 6. First device build
 

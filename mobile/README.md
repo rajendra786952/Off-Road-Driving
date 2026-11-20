@@ -1,7 +1,7 @@
 # Offroad Racing 4x4 (React Native)
 
 The classic 2D hill-climb from `../src/game` (Phaser), rebuilt as a native React Native app with
-**100 levels, 100 vehicles, 10 environments and 15 kinds of obstacle**.
+**100 levels, 100 vehicles, 10 environments and 17 kinds of obstacle**. It is played in landscape only.
 
 - **Expo SDK 58 / React Native 0.88**, TypeScript.
 - **Physics:** `matter-js`, with the vehicle model, terrain formula, fuel, stunt and scoring rules ported
@@ -23,7 +23,9 @@ npm run android    # builds and installs a development build (needs Android Stud
 npm run ios        # same for iOS (needs a Mac with Xcode)
 ```
 
-Skia and Reanimated contain native code, so the app needs a development build; it does not run in Expo Go.
+**Expo Go** (`npm start`, then scan the QR code) runs the game **without ads**: Expo Go cannot contain the
+AdMob native code, so the ads layer switches itself off there. To see ads you need a build of this app
+(`npm run android`, or EAS Build).
 `npx expo prebuild` generates the `android/` and `ios/` folders (they are not committed).
 
 ## Check it
@@ -33,12 +35,34 @@ npm run typecheck          # tsc
 npm test                   # 24 unit tests: levels, cars, terrain, pickups, save rules, physics, ad rules and rewards
 npm run bot                # automated driver plays all 100 levels
 npm run bot -- cars        # every one of the 100 cars finishes levels 1 and 20
-npm run bot -- starter     # how far the stock starter jeep gets (88 of 100)
+npm run bot -- starter     # how far the stock starter jeep gets (all 100)
 npm run gen:icons          # redraw the app icon set in assets/ (scripts/gen-icons.mjs)
 npx tsx scripts/diag.ts 1 100 mountain-jeep   # time lost and deaths per obstacle type
 npx tsx scripts/trace.ts 42 buggy-2 30 3000 3 # step-by-step trace of one run
+npx tsx scripts/perf.ts                       # cost of one physics step, engine vs game rules
 npx expo-doctor
 ```
+
+### Building an APK
+
+```bash
+eas build --platform android --profile preview    # cloud build, installable APK
+```
+
+Release builds are made **without R8 code shrinking** (`app.config.js`). Expo turns shrinking on by default, and
+the first APK crashed at launch because of it: R8 removed a database class that the Google Mobile Ads SDK's
+WorkManager creates by name (`Failed to create an instance of androidx.work.impl.WorkDatabase`). Keep rules
+for it are in `app.config.js` too, so shrinking can be tried again with `ANDROID_MINIFY=1`; test that build on
+a phone before shipping it.
+
+The build is also set up to use less memory on the build machine (`app.config.js`): only the two phone CPU
+types are compiled (arm64-v8a, armeabi-v7a), Gradle gets a 4 GB heap and at most two workers. Without this,
+cloud builds sometimes died with "Gradle build daemon disappeared unexpectedly". An APK built this way does
+not run in an x86 emulator; set `ANDROID_ALL_ARCHS=1` for one that does.
+
+**Frame rate.** Expo Go runs the JavaScript in development mode, which is several times slower than a
+release build. For a realistic number in Expo Go start the server with `npx expo start --no-dev --minify`,
+or measure in the APK (Settings -> Show frame rate).
 
 ## What is in the game
 
@@ -47,7 +71,8 @@ npx expo-doctor
 | Levels | 100, in 10 environments of 10 stages: Green Valley, Pine Forest, Desert Storm, Rocky Mountains, Snow Mountain, Jungle Expedition, Mud Marsh, Neon City, Red Canyon, Volcanic Wasteland. 0.8 km to 4.2 km. A level unlocks when the one before it is finished. |
 | Vehicles | 100 = 10 body styles (jeep, van, pickup, SUV, buggy, monster truck, hatchback, muscle car, sports car, big rig) x 10 series. Each has its own speed, acceleration, handling, braking and suspension, bought with coins. The four original vehicles keep their original numbers and prices. |
 | Customising | Five upgrades per vehicle (engine, tyres, suspension, brakes, fuel tank; 8 levels each) and seven paint jobs. |
-| Obstacles | Fixed rocks, logs, crates, barrels, boulders, ramps, broken road (gaps), plank bridges, moving platforms, mud pits, water, steep hills, cliff drops, falling rocks, rolling boulders. Each is introduced at a set level, then mixed in. |
+| Tracks | Roller-coaster terrain: long climbs and sharp plunges layered on rolling hills, with calmer stretches in between (`COASTER_AMP` in `core/terrain.ts`). Obstacle zones are set at the average height of the hills around them so the joins are never a wall. |
+| Obstacles | Fixed rocks, logs, crates, barrels, boulders, ramps, broken road (gaps), seesaws, plank bridges, wrecking balls, moving platforms, mud pits, water, steep hills, cliff drops, falling rocks, rolling boulders. Hazards have a warning sign a little before them. Each is introduced at a set level, then mixed in. |
 | Run rules | Fuel and fuel cans, coins, stars from the share of coins collected, flip / air-time / wheelie bonuses, a bonus per kilometre, checkpoints (continue up to three times per run), finish line. |
 | Screens | Home, level select, garage, settings, driving screen with pause / restart / resume and a results panel. |
 
@@ -90,8 +115,11 @@ style x series in `data/vehicles.ts`, and an obstacle is a `Feature` type handle
   when a number changed), the pedals and the panels.
 - Terrain is streamed in 1200 px chunks. Each chunk's terrain and decoration are recorded once into a
   picture; car bodies, wheels, backdrops and liquids are cached the same way.
-- Paints and rects are cached, so drawing a frame allocates almost nothing.
-- Obstacles are created when the car is within about 1700 px and removed once it is well past.
+- Paints and rects are cached, and fixed artwork (obstacles, signs, flags, pickups, the sky) is recorded once
+  into pictures and only placed each frame (`stamp()` in `render/scene.ts`), so a frame is few draw calls and
+  allocates almost nothing.
+- Terrain is kept from 900 px behind the car to 1500 px ahead; obstacles are created within about 1300 px
+  and removed once the car is well past.
 
 ## Design decisions worth knowing
 
@@ -99,7 +127,11 @@ style x series in `data/vehicles.ts`, and an obstacle is a `Feature` type handle
   bulldozes or is stuck against breaks up after a moment, and fixed rocks sit lower on slopes.
 - **Rockfall is fair.** A warning shows where rocks will land; only a rock still falling onto the
   driver's head ends the run.
-- **Fuel cans are closer together** than in the original ten levels, because obstacles cost time.
+- **Fuel cans are closer together** than in the original ten levels, because obstacles and climbs cost time.
+- **Landscape only.** `app.json` asks for landscape and `App.tsx` locks it at start (Expo Go ignores `app.json`).
+  Menus are laid out for a wide, short screen: level cards scroll sideways, the garage has three columns.
+- **Menu pictures are images, not canvases.** Cars and the scenery behind the menus are drawn once with Skia
+  into PNG data URIs (`render/carImage.ts`, `render/menuBackdrop.ts`).
 - **Navigation** is a route value in the store (`state/store.ts`), not Expo Router: five screens, no deep links.
 
 ## Known limitations

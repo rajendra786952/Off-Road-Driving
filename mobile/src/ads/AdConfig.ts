@@ -10,7 +10,7 @@
 // ADMOB_IOS_APP_ID.
 import { Platform } from 'react-native';
 
-import { resolveUnitId, isValidUnitId, type AdKind, type AdPlatform } from './units';
+import { resolveUnitId, isTestUnitId, isValidUnitId, type AdKind, type AdPlatform } from './units';
 
 export type { AdKind } from './units';
 
@@ -41,6 +41,11 @@ export const USE_TEST_ADS = __DEV__ || flag(process.env.EXPO_PUBLIC_ADMOB_USE_TE
 
 export function adUnitId(kind: AdKind): string {
   return resolveUnitId(kind, platform, PROD_UNITS[platform][kind], USE_TEST_ADS);
+}
+
+/** "test" when a format requests Google's demo unit, "your own" when it requests the app's unit. */
+export function describeUnits(): string {
+  return (['banner', 'interstitial', 'rewarded'] as AdKind[]).map((k) => `${k}: ${isTestUnitId(adUnitId(k)) ? 'test' : 'your own'}`).join(', ');
 }
 
 /** True when a release build would fall back to test units because an ID is missing. */

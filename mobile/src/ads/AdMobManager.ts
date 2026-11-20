@@ -8,12 +8,13 @@
 //  - every call resolves (never throws), so a missing network only means "no ad".
 import { useSyncExternalStore } from 'react';
 import { AppState } from 'react-native';
-import { AdConfig } from './AdConfig';
+import { AdConfig, describeUnits } from './AdConfig';
+import { setAdsStatus } from './diagnostics';
 import { AdFrequencyManager, type InterstitialTrigger } from './AdFrequencyManager';
 import type { FullScreenHost, ShowOutcome } from './FullScreenAd';
 import { InterstitialAd } from './InterstitialAd';
 import { RewardedAd } from './RewardedAd';
-import { initSdk } from './sdk';
+import { initSdk, openAdInspector } from './sdk';
 import { setAudioActive } from '../audio/sound';
 
 export type RewardedResult = ShowOutcome;
@@ -45,8 +46,13 @@ class Manager {
 
   /** Call once when the app starts. Safe to call again. */
   async init(): Promise<void> {
-    if (this.initStarted || !AdConfig.enabled) return;
+    if (this.initStarted) return;
+    if (!AdConfig.enabled) {
+      setAdsStatus({ sdk: 'switched off (EXPO_PUBLIC_ADMOB_ENABLED=0)' });
+      return;
+    }
     this.initStarted = true;
+    setAdsStatus({ units: describeUnits() });
     this.ready = await initSdk();
     this.publish();
     this.preload();
@@ -105,6 +111,11 @@ class Manager {
     if (outcome !== 'unavailable') this.frequency.markRewardedShown();
     this.publish();
     return outcome;
+  }
+
+  /** Google's ad inspector: every ad unit, and the reason a request failed. */
+  openInspector(): Promise<boolean> {
+    return openAdInspector();
   }
 
   private preload(): void {

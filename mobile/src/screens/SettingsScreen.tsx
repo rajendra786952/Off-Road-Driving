@@ -5,12 +5,16 @@ import { VEHICLE_COUNT } from '../data/vehicles';
 import { completedLevels, totalStars } from '../state/save';
 import { resetProgress, updateSettings, useStore } from '../state/store';
 import { setAudioSettings } from '../audio/sound';
+import { AdMobManager } from '../ads/AdMobManager';
+import { useAdsStatus } from '../ads/diagnostics';
+import { notify } from '../ui/notice';
 import { Btn, C, Screen, Toggle, fmt, s as ks } from '../ui/kit';
 
 export default function SettingsScreen() {
   const save = useStore((s) => s.save);
   const set = save.settings;
   const [confirm, setConfirm] = useState(false);
+  const ads = useAdsStatus();
 
   const audio = (patch: { sound?: boolean; music?: boolean }) => {
     updateSettings(patch);
@@ -18,16 +22,16 @@ export default function SettingsScreen() {
   };
 
   return (
-    <Screen title="SETTINGS">
+    <Screen title="SETTINGS" theme="mountains">
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={st.body}>
-        <View style={ks.card}>
+        <View style={[ks.card, st.col]}>
           <Text style={st.head}>SOUND</Text>
           <Toggle label="Sound effects" hint="Engine, coins, crashes" value={set.sound} onChange={(v) => audio({ sound: v })} />
           <Toggle label="Music" value={set.music} onChange={(v) => audio({ music: v })} />
           <Toggle label="Vibration" hint="On crashes, hard landings and checkpoints" value={set.vibration} onChange={(v) => updateSettings({ vibration: v })} />
         </View>
 
-        <View style={ks.card}>
+        <View style={[ks.card, st.col]}>
           <Text style={st.head}>CONTROLS</Text>
           <Toggle
             label="Split-screen pedals"
@@ -43,7 +47,7 @@ export default function SettingsScreen() {
           </Text>
         </View>
 
-        <View style={ks.card}>
+        <View style={[ks.card, st.col]}>
           <Text style={st.head}>PROGRESS</Text>
           <Text style={st.stat}>Levels finished: {completedLevels(save)} / {LEVEL_COUNT}</Text>
           <Text style={st.stat}>Stars: {totalStars(save)} / {LEVEL_COUNT * 3}</Text>
@@ -70,13 +74,33 @@ export default function SettingsScreen() {
             <Btn small label="RESET PROGRESS" color={C.grey} onPress={() => setConfirm(true)} style={{ marginTop: 10, alignSelf: 'flex-start' }} />
           )}
         </View>
+        <View style={[ks.card, st.col]}>
+          <Text style={st.head}>ADS</Text>
+          <Text style={st.stat}>Ads code in this build: {ads.native}</Text>
+          <Text style={st.stat}>Consent: {ads.consent}</Text>
+          <Text style={st.stat}>Ads service: {ads.sdk}</Text>
+          <Text style={st.stat}>Ad units: {ads.units}</Text>
+          <Text style={st.stat}>Banner: {ads.banner}</Text>
+          <Text style={st.stat}>Interstitial: {ads.interstitial}</Text>
+          <Text style={st.stat}>Rewarded: {ads.rewarded}</Text>
+          <Btn
+            small
+            label="AD INSPECTOR"
+            color={C.grey}
+            onPress={async () => {
+              if (!(await AdMobManager.openInspector())) notify('The ad inspector is not available in this build.', 'info');
+            }}
+            style={{ marginTop: 10, alignSelf: 'flex-start' }}
+          />
+        </View>
       </ScrollView>
     </Screen>
   );
 }
 
 const st = StyleSheet.create({
-  body: { gap: 10, paddingBottom: 18, maxWidth: 640, width: '100%', alignSelf: 'center' },
+  body: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: 10, paddingBottom: 14 },
+  col: { flexGrow: 1, flexBasis: 280 },
   head: { color: C.dim, fontSize: 12, fontWeight: '900', letterSpacing: 1.5, marginBottom: 2 },
   help: { color: C.dim, fontSize: 13, lineHeight: 19, marginTop: 6 },
   stat: { color: C.text, fontSize: 14, fontWeight: '600', marginTop: 4 },

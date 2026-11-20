@@ -58,6 +58,8 @@ export function botControls(w: GameWorld, bot: BotState): { gas: boolean; brake:
     else if (f.type === 'hill') target = 6;
     else if (f.type === 'bridge' && x > f.a - 200 && x < f.b) target = 6;
     else if (f.type === 'boulder' && x > f.a - 260 && x < f.b + 60) target = 5; // nudge it, don't ram it
+    else if (f.type === 'seesaw' && x > f.a - 300 && x < f.b + 40) target = 5; // roll over it, it is not a ramp
+    else if (f.type === 'pendulum' && x > f.a - 300 && x < f.b + 120) target = 9; // don't linger under the ball
     else if (f.type === 'falling' && x < f.a - 120) {
       // wait for the rocks to land, then drive over them
       const airborne = w.props.some((p) => p.kind === 'fallrock' && p.fid === f.id && p.body.speed > 1.5);

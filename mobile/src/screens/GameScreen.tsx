@@ -7,7 +7,6 @@ import { Canvas, Picture, Skia, type SkPicture } from '@shopify/react-native-ski
 import { useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
-import * as ScreenOrientation from 'expo-screen-orientation';
 import { GameWorld, type GameEvent, type RunResult } from '../core/world';
 import { MAX_STEPS_PER_FRAME, PHYSICS_STEP, PX_PER_METER, SPAWN_X } from '../core/constants';
 import { SceneRenderer } from '../render/scene';
@@ -293,7 +292,6 @@ export default function GameScreen({ levelId }: { levelId: number }) {
     };
     raf = requestAnimationFrame(frame);
     if (getState().save.settings.sound) startEngine();
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
 
     return () => {
       alive = false;
@@ -306,7 +304,6 @@ export default function GameScreen({ levelId }: { levelId: number }) {
       worldRef.current = null;
       rendererRef.current = null;
       if (__DEV__) delete (globalThis as Record<string, unknown>).__tt;
-      ScreenOrientation.unlockAsync().catch(() => {});
     };
     // one world per mount: the screen is remounted (keyed) for every new run
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -494,7 +491,9 @@ export default function GameScreen({ levelId }: { levelId: number }) {
       ) : null}
 
       {phase === 'result' && o ? (
-        <Panel title={o.result.win ? 'LEVEL COMPLETE' : END_TEXT[o.result.reason]?.title ?? 'CRASHED'} sub={`${level.id}. ${level.name}`}>
+        <Panel wide title={o.result.win ? 'LEVEL COMPLETE' : END_TEXT[o.result.reason]?.title ?? 'CRASHED'} sub={`${level.id}. ${level.name}`}>
+          <View style={st.resultRow}>
+          <View style={st.resultInfo}>
           {o.result.win ? <Stars n={o.result.stars} size={40} /> : <Text style={st.line}>Progress: {Math.floor(o.result.progress * 100)}%</Text>}
           <Text style={st.line}>
             Coins: {o.result.coins} / {o.result.totalCoins}   (+{fmt(o.reward.coinValue)})
@@ -504,6 +503,8 @@ export default function GameScreen({ levelId }: { levelId: number }) {
           <Text style={st.total}>{o.result.win ? 'Total earned' : 'Coins kept'}: +{fmt(o.reward.total)}</Text>
           {!o.result.win ? <Text style={st.tip}>{END_TEXT[o.result.reason]?.tip}</Text> : null}
           {o.result.win && o.reward.unlockedNext ? <Text style={st.tip}>Level {levelId + 1} unlocked</Text> : null}
+          </View>
+          <View style={st.resultBtns}>
           {o.result.win && rewardedReady && !doubled && o.reward.total > 0 ? (
             <Btn label={`DOUBLE IT: +${fmt(o.reward.total)}`} sub="watch a short ad" color={C.orange} onPress={doubleCoins} style={st.wide} />
           ) : null}
@@ -522,6 +523,8 @@ export default function GameScreen({ levelId }: { levelId: number }) {
             <Btn label="GARAGE" color={C.grey} small onPress={() => leave(() => navigate({ name: 'garage' }), o.result.win ? 'levelComplete' : 'menuReturn')} style={st.flex} />
             <Btn label="LEVELS" color={C.grey} small onPress={() => leave(() => navigate({ name: 'levels' }), o.result.win ? 'levelComplete' : 'menuReturn')} style={st.flex} />
           </View>
+          </View>
+          </View>
         </Panel>
       ) : null}
     </View>
@@ -535,14 +538,14 @@ function emptyPicture(): SkPicture {
 }
 
 /** Centre panel with a pop-in animation (pause and results). */
-function Panel({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
+function Panel({ title, sub, children, wide }: { title: string; sub?: string; children: React.ReactNode; wide?: boolean }) {
   const a = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.spring(a, { toValue: 1, useNativeDriver: true, speed: 16, bounciness: 7 }).start();
   }, [a]);
   return (
     <Animated.View style={[StyleSheet.absoluteFill, st.scrim, { opacity: a }]}>
-      <Animated.View style={[st.panel, { transform: [{ scale: a.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1] }) }] }]}>
+      <Animated.View style={[st.panel, wide && st.panelWide, { transform: [{ scale: a.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1] }) }] }]}>
         <Text style={st.panelTitle}>{title}</Text>
         {sub ? <Text style={st.panelSub}>{sub}</Text> : null}
         {children}
@@ -565,8 +568,8 @@ const st = StyleSheet.create({
   progress: { flexDirection: 'row', width: '70%', maxWidth: 320, marginVertical: 4, borderWidth: 2, borderColor: 'rgba(14,26,34,0.85)', borderRadius: 6 },
   toast: { position: 'absolute', top: '24%', left: 0, right: 0, alignItems: 'center' },
   toastText: { fontSize: 22, fontWeight: '900', textShadowColor: '#000', textShadowRadius: 5, textShadowOffset: { width: 0, height: 1 } },
-  pedal: { position: 'absolute', width: 112, height: 84, borderRadius: 20, alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: 'rgba(255,255,255,0.5)' },
-  pedalText: { color: '#ffffff', fontSize: 19, fontWeight: '900', letterSpacing: 1 },
+  pedal: { position: 'absolute', width: 132, height: 92, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: 'rgba(255,255,255,0.5)' },
+  pedalText: { color: '#ffffff', fontSize: 21, fontWeight: '900', letterSpacing: 1 },
   pause: { position: 'absolute', width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(14,26,34,0.7)', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   pauseBar: { width: 6, height: 18, borderRadius: 2, backgroundColor: '#ffffff', marginHorizontal: 3 },
   scrim: { backgroundColor: 'rgba(5,10,14,0.62)', alignItems: 'center', justifyContent: 'center', padding: 12 },
@@ -576,5 +579,9 @@ const st = StyleSheet.create({
   line: { color: C.text, fontSize: 15, fontWeight: '700', marginTop: 3 },
   total: { color: C.gold, fontSize: 19, fontWeight: '900', marginTop: 5 },
   tip: { color: C.dim, fontSize: 13, marginTop: 3, textAlign: 'center' },
-  btnRow: { flexDirection: 'row', alignSelf: 'stretch', gap: 10, marginTop: 9 },
+  btnRow: { flexDirection: 'row', alignSelf: 'stretch', gap: 8, marginTop: 8 },
+  panelWide: { maxWidth: 640 },
+  resultRow: { flexDirection: 'row', alignSelf: 'stretch', alignItems: 'center', gap: 14 },
+  resultInfo: { flex: 1, alignItems: 'center' },
+  resultBtns: { width: 250 },
 });

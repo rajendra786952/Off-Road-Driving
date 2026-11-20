@@ -20,6 +20,8 @@ export type FeatureType =
   | 'drop' // dangerous slope: the ground steps down
   | 'falling' // rocks fall when the car arrives
   | 'roller' // boulder rolls towards the car
+  | 'seesaw' // plank on a pivot that tips under the car
+  | 'pendulum' // wrecking ball swinging across the road
   | 'checkpoint';
 
 export interface Feature {
@@ -54,6 +56,8 @@ export const FEATURE_LABEL: Record<FeatureType, string> = {
   drop: 'Cliff drops',
   falling: 'Falling rocks',
   roller: 'Rolling boulders',
+  seesaw: 'Seesaws',
+  pendulum: 'Wrecking balls',
   checkpoint: 'Checkpoints',
 };
 
@@ -68,8 +72,10 @@ export const FEATURE_UNLOCK: [FeatureType, number][] = [
   ['mud', 7],
   ['boulder', 10],
   ['gap', 13],
+  ['seesaw', 15],
   ['water', 17],
   ['bridge', 21],
+  ['pendulum', 23],
   ['falling', 26],
   ['roller', 31],
   ['platform', 36],
@@ -215,6 +221,21 @@ export function generateFeatures(input: FeatureGenInput): Feature[] {
         f.a = x + 120;
         f.b = f.a + 420;
         f.x1 = f.b + 60;
+        break;
+      case 'seesaw':
+        f.h = 30 + rnd() * 10; // pivot height
+        f.a = snap(x + BLEND + 160);
+        f.b = f.a + snap(260 + rnd() * 60); // plank length
+        f.x0 = f.a - 160 - BLEND;
+        f.x1 = f.b + 240 + BLEND;
+        break;
+      case 'pendulum':
+        f.h = 24 + rnd() * 6; // ball radius
+        f.n = 160 + rnd() * 30; // rope length
+        f.a = snap(x + BLEND + 260);
+        f.b = f.a + 40;
+        f.x0 = f.a - 260 - BLEND;
+        f.x1 = f.b + 260 + BLEND;
         break;
       case 'roller':
         f.n = 1;

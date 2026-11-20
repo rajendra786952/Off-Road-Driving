@@ -5,6 +5,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { play, startMusic } from '../audio/sound';
 import { useStore, goBack } from '../state/store';
 import { BannerAd } from '../ads/BannerAd';
+import { Backdrop } from './Backdrop';
+import type { ThemeId } from '../data/themes';
 
 export const C = {
   bg: '#0e161d',
@@ -132,11 +134,12 @@ export function Transition({ id, children }: { id: string; children: ReactNode }
 }
 
 /** Frame of every menu screen: title bar with back button and the coin balance. */
-export function Screen({ title, children, right, banner }: { title: string; children: ReactNode; right?: ReactNode; banner?: boolean }) {
+export function Screen({ title, children, right, banner, theme }: { title: string; children: ReactNode; right?: ReactNode; banner?: boolean; theme?: ThemeId }) {
   const insets = useSafeAreaInsets();
   const coins = useStore((st) => st.save.coins);
   return (
-    <View style={[s.screen, { paddingTop: insets.top + 6, paddingLeft: insets.left + 12, paddingRight: insets.right + 12, paddingBottom: insets.bottom }]}>
+    <View style={[s.screen, { paddingTop: insets.top + 4, paddingLeft: insets.left + 12, paddingRight: insets.right + 12, paddingBottom: insets.bottom }]}>
+      {theme ? <Backdrop theme={theme} /> : null}
       <View style={s.header}>
         <Pressable
           accessibilityRole="button"
@@ -165,11 +168,11 @@ export function Screen({ title, children, right, banner }: { title: string; chil
 export const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center' },
   screen: { flex: 1, backgroundColor: C.bg },
-  header: { flexDirection: 'row', alignItems: 'center', height: 46, marginBottom: 6 },
-  back: { width: 40, height: 40, borderRadius: 12, backgroundColor: C.panelHi, alignItems: 'center', justifyContent: 'center' },
+  header: { flexDirection: 'row', alignItems: 'center', height: 42, marginBottom: 4, gap: 8 },
+  back: { width: 44, height: 38, borderRadius: 12, backgroundColor: 'rgba(32,49,62,0.95)', alignItems: 'center', justifyContent: 'center' },
   backText: { color: C.text, fontSize: 30, lineHeight: 32, fontWeight: '700', marginTop: -3 },
-  title: { flex: 1, color: C.text, fontSize: 20, fontWeight: '900', marginLeft: 12, letterSpacing: 0.5 },
-  coinPill: { backgroundColor: C.panel, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: C.line, marginLeft: 8 },
+  title: { flex: 1, color: C.text, fontSize: 20, fontWeight: '900', marginLeft: 4, letterSpacing: 0.5, textShadowColor: '#000', textShadowRadius: 5 },
+  coinPill: { backgroundColor: 'rgba(14,22,29,0.88)', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: C.line, marginLeft: 8 },
   btn: { minHeight: 46, borderRadius: 14, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 4, borderBottomColor: 'rgba(0,0,0,0.28)' },
   btnSmall: { minHeight: 36, borderRadius: 10, paddingHorizontal: 12, borderBottomWidth: 3 },
   btnText: { color: '#ffffff', fontSize: 17, fontWeight: '900', letterSpacing: 0.6 },
@@ -180,5 +183,5 @@ export const s = StyleSheet.create({
   toggleRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, minHeight: 48 },
   track: { width: 50, height: 28, borderRadius: 14, padding: 3, justifyContent: 'center' },
   knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#ffffff' },
-  card: { backgroundColor: C.panel, borderRadius: 16, borderWidth: 1, borderColor: C.line, padding: 12 },
+  card: { backgroundColor: 'rgba(18,28,36,0.94)', borderRadius: 16, borderWidth: 1, borderColor: C.line, padding: 12 },
 });

@@ -40,7 +40,10 @@ export type GameEvent =
   | { type: 'lowFuel' }
   | { type: 'end'; reason: EndReason };
 
-export type PropKind = 'rock' | 'log' | 'crate' | 'barrel' | 'boulder' | 'plank' | 'platform' | 'fallrock';
+export type PropKind = 'rock' | 'log' | 'crate' | 'barrel' | 'boulder' | 'plank' | 'platform' | 'fallrock' | 'seesaw' | 'ball';
+
+/** Height of the frame a wrecking ball hangs from, above the road. */
+export const PENDULUM_TOP = 250;
 export interface Prop {
   kind: PropKind;
   body: Matter.Body;
@@ -74,6 +77,8 @@ interface Live {
   constraints: Matter.Constraint[];
   planks: Matter.Body[];
   platform: Matter.Body | null;
+  seesaw: Matter.Body | null;
+  ball: Matter.Body | null;
   rimY: number;
   triggered: boolean;
 }
@@ -123,6 +128,7 @@ export class GameWorld {
   chunkVersion = 0;
 
   private live = new Map<number, Live>();
+  private seesawHalf = new Map<number, number>();
   private collected = new Set<string>();
   /** Checkpoints already driven through (feature ids). */
   passed = new Set<number>();
@@ -186,6 +192,14 @@ export class GameWorld {
         const i = Math.min(lv.planks.length - 1, Math.max(0, Math.floor((x - f.a) / pw)));
         return lv.planks[i].position.y - PLANK_T / 2;
       }
+    }
+    // a seesaw plank counts as ground while the car is on it
+    for (const [id, lv] of this.live) {
+      const s = lv.seesaw;
+      if (!s) continue;
+      const half = this.seesawHalf.get(id) ?? 0;
+      const dx = x - s.position.x;
+      if (Math.abs(dx) < half * Math.cos(s.angle)) return Math.min(this.profile.surfaceY(x), s.position.y + dx * Math.tan(s.angle) - PLANK_T / 2);
     }
     return this.profile.surfaceY(x);
   };
@@ -262,8 +276,8 @@ export class GameWorld {
 
   // ------------------------------------------------------------------ terrain
   private updateChunks(focusX: number): void {
-    const first = Math.max(-1, Math.floor((focusX - 1400) / CHUNK_SIZE));
-    const last = Math.floor((focusX + 2400) / CHUNK_SIZE);
+    const first = Math.max(-1, Math.floor((focusX - 900) / CHUNK_SIZE));
+    const last = Math.floor((focusX + 1500) / CHUNK_SIZE);
     for (let i = first; i <= last; i++) if (!this.chunks.has(i)) this.buildChunk(i);
     for (const [i, chunk] of this.chunks) {
       if (i < first - 1 || i > last + 1) this.destroyChunk(i, chunk);
@@ -334,7 +348,7 @@ export class GameWorld {
     const x = this.vehicle.x;
     for (const f of this.features) {
       if (f.type === 'checkpoint' || f.type === 'hill' || f.type === 'drop' || f.type === 'ramp' || f.type === 'gap' || f.type === 'mud' || f.type === 'water') continue;
-      const near = x > f.x0 - 1700 && x < f.x1 + 1500;
+      const near = x > f.x0 - 1300 && x < f.x1 + 1100;
       const lv = this.live.get(f.id);
       if (near && !lv) this.activate(f);
       else if (!near && lv) this.deactivate(f.id);
@@ -356,6 +370,24 @@ export class GameWorld {
             density: 0.0022, friction: 0.8, restitution: 0.1, label: 'fallrock', angle: i,
           });
           this.addProp(lv, { kind: 'fallrock', body, fid: f.id, r, w: 0, h: 0, variant: i });
+        }
+      }
+      if (lv.seesaw) {
+        // the ends stop at road level
+        const s = lv.seesaw;
+        const max = Math.asin(Math.min(0.9, f.h / ((f.b - f.a) / 2)));
+        if (s.angle > max || s.angle < -max) {
+          const av = s.angularVelocity;
+          Body.setAngle(s, s.angle > max ? max : -max);
+          Body.setAngularVelocity(s, s.angle > 0 ? Math.min(0, av) : Math.max(0, av));
+        }
+      }
+      if (lv.ball) {
+        // keep the wrecking ball swinging: a nudge along its path whenever it slows down
+        const b = lv.ball;
+        if (b.speed < 5.2 && Math.abs(b.position.x - f.a) < 60) {
+          const dir = b.velocity.x >= 0 ? 1 : -1;
+          Body.applyForce(b, b.position, { x: dir * b.mass * 0.00045, y: 0 });
         }
       }
       if (!lv.triggered && f.type === 'roller' && x > f.a) {
@@ -390,11 +422,20 @@ export class GameWorld {
     Composite.remove(this.engine.world, p.body);
     this.props = this.props.filter((q) => q !== p);
     const lv = this.live.get(p.fid);
-    if (lv) lv.bodies = lv.bodies.filter((b) => b !== p.body);
+    if (lv) {
+      lv.bodies = lv.bodies.filter((b) => b !== p.body);
+      if (p.kind === 'ball' || p.kind === 'seesaw') {
+        // the rope snaps / the plank comes off its pivot
+        Composite.remove(this.engine.world, lv.constraints as never);
+        lv.constraints = [];
+        lv.ball = null;
+        lv.seesaw = null;
+      }
+    }
   }
 
   private activate(f: Feature): void {
-    const lv: Live = { bodies: [], constraints: [], planks: [], platform: null, rimY: this.profile.surfaceY(f.a), triggered: false };
+    const lv: Live = { bodies: [], constraints: [], planks: [], platform: null, seesaw: null, ball: null, rimY: this.profile.surfaceY(f.a), triggered: false };
     this.live.set(f.id, lv);
     const sy = this.profile.surfaceY;
     switch (f.type) {
@@ -470,6 +511,40 @@ export class GameWorld {
         }
         link({ pointA: { x: f.b, y }, bodyB: lv.planks[n - 1], pointB: { x: pw / 2, y: 0 } });
         Composite.add(this.engine.world, lv.constraints);
+        break;
+      }
+      case 'seesaw': {
+        const len = f.b - f.a;
+        const cx = (f.a + f.b) / 2;
+        const py = lv.rimY - f.h;
+        const tilt = -Math.asin(Math.min(0.9, f.h / (len / 2))); // near end resting on the road
+        const body = Bodies.rectangle(cx, py, len, PLANK_T, {
+          angle: tilt, density: 0.0011, friction: 1.4, frictionStatic: 2.2, restitution: 0, label: 'seesaw', chamfer: { radius: 3 },
+          // the plank never touches the ground body: its travel is limited in updateFeatures instead,
+          // because an end pinched between a wheel and the ground makes the solver throw the car
+          collisionFilter: { mask: 0xffffffff & ~CAT_TERRAIN },
+        });
+        lv.seesaw = body;
+        this.seesawHalf.set(f.id, len / 2);
+        this.addProp(lv, { kind: 'seesaw', body, fid: f.id, r: len / 2, w: len, h: PLANK_T, variant: 0 });
+        const pin = Constraint.create({ pointA: { x: cx, y: py }, bodyB: body, pointB: { x: 0, y: 0 }, length: 0, stiffness: 1 });
+        lv.constraints.push(pin);
+        Composite.add(this.engine.world, pin);
+        break;
+      }
+      case 'pendulum': {
+        const r = f.h;
+        const top = { x: f.a, y: lv.rimY - PENDULUM_TOP };
+        const start = -1.05; // released from the left, about 60 degrees up
+        const body = Bodies.circle(top.x + Math.sin(start) * f.n, top.y + Math.cos(start) * f.n, r, {
+          density: 0.0014, friction: 0.3, frictionAir: 0, restitution: 0.25, label: 'ball',
+          collisionFilter: { mask: 0xffffffff & ~CAT_TERRAIN },
+        });
+        lv.ball = body;
+        this.addProp(lv, { kind: 'ball', body, fid: f.id, r, w: f.n, h: 0, variant: 0 });
+        const rope = Constraint.create({ pointA: top, bodyB: body, pointB: { x: 0, y: 0 }, length: f.n, stiffness: 1 });
+        lv.constraints.push(rope);
+        Composite.add(this.engine.world, rope);
         break;
       }
       case 'platform': {

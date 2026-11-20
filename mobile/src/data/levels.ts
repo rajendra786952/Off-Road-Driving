@@ -57,7 +57,8 @@ function build(i: number): LevelConfig {
       seed: 5000 + i * 31,
       coinRate: 0.75,
       // obstacles cost time, so cans are closer together than in the original ten levels
-      fuelInterval: i < 10 ? 6 : 4,
+      // and the steeper the roller coaster gets, the closer still
+      fuelInterval: i < 10 ? 6 : i < 60 ? 4 : 3,
       fuelPhase: i % 3,
     },
     bonus: 150 + i * 25,

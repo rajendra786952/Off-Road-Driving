@@ -1,23 +1,45 @@
 // Starts the Google Mobile Ads SDK: asks for consent where the law requires it
 // (Google's User Messaging Platform), applies the audience settings, initialises.
-import mobileAds, { AdsConsent, MaxAdContentRating } from 'react-native-google-mobile-ads';
 import { AdConfig } from './AdConfig';
+import { describeAdError, setAdsStatus } from './diagnostics';
+import { gma } from './native';
 
 /** Resolves to true when ads may be requested. Never throws. */
 export async function initSdk(): Promise<boolean> {
+  const lib = gma();
+  if (!lib) {
+    // Expo Go, or a build without the AdMob native code: no ads, the game still runs
+    setAdsStatus({ native: 'no (Expo Go or an old build): ads are off', sdk: 'off' });
+    return false;
+  }
+  setAdsStatus({ native: 'yes', sdk: 'starting' });
+  const { AdsConsent, MaxAdContentRating } = lib;
+  const mobileAds = lib.default;
+
+  let consentNote = '';
   try {
     // Shows Google's consent form only if one is required and configured in the
-    // AdMob console; fails quietly without a connection.
+    // AdMob console.
     await AdsConsent.gatherConsent();
-  } catch {
-    // offline, or no consent message set up: fall through to the stored answer
+  } catch (e) {
+    // Offline, or no consent message has been created for this app ID yet. That
+    // is not a "no" from the player, so it must not switch the ads off.
+    consentNote = ` (consent service: ${describeAdError(e).replace('failed: ', '')})`;
   }
   try {
     const info = await AdsConsent.getConsentInfo();
-    if (info.canRequestAds === false) return false;
-  } catch {
-    // consent state unknown: the SDK itself will refuse requests if it must
+    setAdsStatus({ consent: `${info.status}, can request ads: ${info.canRequestAds ? 'yes' : 'no'}${consentNote}` });
+    // Ads are held back only when consent is definitely required and has not been
+    // given. "Unknown" (no answer from the service) lets the SDK decide: it serves
+    // limited ads on its own where it must.
+    if (info.status === 'REQUIRED' && !info.canRequestAds) {
+      setAdsStatus({ sdk: 'waiting: the player has not answered the consent form' });
+      return false;
+    }
+  } catch (e) {
+    setAdsStatus({ consent: `unknown${consentNote || ` (${describeAdError(e)})`}` });
   }
+
   try {
     await mobileAds().setRequestConfiguration({
       maxAdContentRating: AdConfig.childDirected ? MaxAdContentRating.G : MaxAdContentRating.PG,
@@ -25,6 +47,20 @@ export async function initSdk(): Promise<boolean> {
       ...(AdConfig.testDevices.length ? { testDeviceIdentifiers: AdConfig.testDevices } : {}),
     });
     await mobileAds().initialize();
+    setAdsStatus({ sdk: 'ready' });
+    return true;
+  } catch (e) {
+    setAdsStatus({ sdk: describeAdError(e) });
+    return false;
+  }
+}
+
+/** Google's built-in tool that shows every ad unit and why a request failed. */
+export async function openAdInspector(): Promise<boolean> {
+  const lib = gma();
+  if (!lib) return false;
+  try {
+    await lib.default().openAdInspector();
     return true;
   } catch {
     return false;

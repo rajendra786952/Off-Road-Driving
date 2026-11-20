@@ -1,8 +1,21 @@
 // One preloaded full-screen ad (interstitial or rewarded) and its life cycle:
 // load -> ready -> show -> closed -> load the next one. Used by InterstitialAd.ts
 // and RewardedAd.ts. The browser build gets FullScreenAd.web.ts instead.
-import { AdEventType, InterstitialAd as SdkInterstitial, RewardedAd as SdkRewarded, RewardedAdEventType } from 'react-native-google-mobile-ads';
+import type { InterstitialAd as SdkInterstitial, RewardedAd as SdkRewarded } from 'react-native-google-mobile-ads';
 import { AdConfig, adUnitId } from './AdConfig';
+import { gma } from './native';
+import { describeAdError, setAdsStatus } from './diagnostics';
+
+// Event names of the SDK (AdEventType / RewardedAdEventType). Written out here so
+// this file needs nothing from the library until an ad is actually requested.
+const EVENT = {
+  LOADED: 'loaded',
+  ERROR: 'error',
+  OPENED: 'opened',
+  CLOSED: 'closed',
+  REWARDED_LOADED: 'rewarded_loaded',
+  EARNED_REWARD: 'rewarded_earned_reward',
+} as const;
 
 export type ShowOutcome = 'earned' | 'closed' | 'unavailable';
 
@@ -47,17 +60,21 @@ export class FullScreenAd {
   load(): void {
     if (this.showing || this.loading || !this.host.canLoad()) return;
     if (this.ready && Date.now() - this.loadedAt < MAX_AGE_MS) return;
+    const lib = gma();
+    if (!lib) return; // no AdMob native module in this build
     this.dispose();
     try {
       const unit = adUnitId(this.kind);
-      const ad = this.kind === 'rewarded' ? SdkRewarded.createForAdRequest(unit) : SdkInterstitial.createForAdRequest(unit);
+      const ad = this.kind === 'rewarded' ? lib.RewardedAd.createForAdRequest(unit) : lib.InterstitialAd.createForAdRequest(unit);
       this.ad = ad;
       this.loading = true;
+      setAdsStatus({ [this.kind]: 'loading' });
       // one listener for every event of this ad instance
-      (ad as SdkRewarded).addAdEventsListener(({ type }) => this.onEvent(ad, type));
+      (ad as SdkRewarded).addAdEventsListener(({ type, payload }) => this.onEvent(ad, type, payload));
       ad.load();
-    } catch {
+    } catch (e) {
       this.loading = false;
+      setAdsStatus({ [this.kind]: describeAdError(e) });
       this.scheduleRetry();
     }
   }
@@ -78,31 +95,33 @@ export class FullScreenAd {
     });
   }
 
-  private onEvent(ad: SdkInterstitial | SdkRewarded, type: AdEventType | RewardedAdEventType): void {
+  private onEvent(ad: SdkInterstitial | SdkRewarded, type: string, payload?: unknown): void {
     if (ad !== this.ad) return; // a late event from an ad that was already replaced
     switch (type) {
-      case AdEventType.LOADED:
-      case RewardedAdEventType.LOADED:
+      case EVENT.LOADED:
+      case EVENT.REWARDED_LOADED:
         this.loading = false;
         this.ready = true;
         this.loadedAt = Date.now();
         this.failures = 0;
+        setAdsStatus({ [this.kind]: 'loaded, ready to show' });
         this.host.onChange();
         break;
-      case AdEventType.OPENED:
+      case EVENT.OPENED:
         this.host.onPresented(true);
         break;
-      case RewardedAdEventType.EARNED_REWARD:
+      case EVENT.EARNED_REWARD:
         // AdMob confirmed the reward; it is handed over when the ad closes
         this.earned = true;
         break;
-      case AdEventType.CLOSED:
+      case EVENT.CLOSED:
         this.finish(ad, this.earned ? 'earned' : 'closed');
         break;
-      case AdEventType.ERROR:
+      case EVENT.ERROR:
         if (this.showing) this.finish(ad, this.earned ? 'earned' : 'unavailable');
         else {
           this.loading = false;
+          setAdsStatus({ [this.kind]: `${describeAdError(payload)} (will retry)` });
           this.dispose();
           this.host.onChange();
           this.scheduleRetry();

@@ -4,6 +4,7 @@
 import React, { useEffect } from 'react';
 import { ActivityIndicator, AppState, BackHandler, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { goBack, loadSave, getState, useStore } from './src/state/store';
 import { installDevHooks } from './src/dev/hooks';
@@ -25,6 +26,9 @@ export default function App() {
   const route = useStore((s) => s.route);
 
   useEffect(() => {
+    // The whole game is played with the phone held sideways. app.json asks for
+    // landscape too; this also covers Expo Go, which ignores that setting.
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
     loadSave().then(() => {
       initAudio(getState().save.settings);
       // ads start after the game is usable; a failure here only means no ads

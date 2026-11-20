@@ -8,7 +8,7 @@ import type { Feature } from './features';
 export const SEGMENT = 40; // horizontal spacing of terrain sample points (px)
 export const BASE_Y = 400; // world y of flat ground
 export const CHASM_DEPTH = 420;
-export const BLEND = 320; // distance over which a flattened zone meets the hills
+export const BLEND = 600; // distance over which a flattened zone meets the hills
 const BUMP_CELL = 750;
 
 export interface TerrainConfig {
@@ -31,7 +31,10 @@ export function smoothstep(a: number, b: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-const FLATTENING = new Set(['ramp', 'gap', 'bridge', 'platform', 'mud', 'water', 'hill']);
+const FLATTENING = new Set(['ramp', 'gap', 'bridge', 'platform', 'mud', 'water', 'hill', 'seesaw', 'pendulum']);
+
+/** Size of the roller-coaster dips, in px, before the level's hill factor. */
+export const COASTER_AMP = 74;
 
 export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = []): TerrainProfile {
   const seed = cfg.seed;
@@ -43,7 +46,10 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
   const drops = features.filter((f) => f.type === 'drop');
   const flats = features.filter((f) => FLATTENING.has(f.type));
 
-  /** The original rolling profile, plus permanent step-downs. */
+  const p5 = hashFloat(seed, 5) * Math.PI * 2;
+  const p6 = hashFloat(seed, 6) * Math.PI * 2;
+
+  /** Rolling hills plus the roller-coaster layer, plus permanent step-downs. */
   function base(x: number): number {
     const { hill, rough, bumps } = cfg;
     const macro = 0.88 + 0.28 * Math.sin(x * 0.0005 + p4);
@@ -51,7 +57,12 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
     const kicker = Math.sin(x * 0.0055 + p2) * 30 * hill;
     const whoopMod = Math.max(0, Math.sin(x * 0.0014 + p3));
     const whoop = Math.sin(x * 0.0125 + p1) * 12 * rough * whoopMod;
-    let y = dropLaunch + kicker + whoop;
+    // Roller coaster: a long climb, then a sharp plunge. The second harmonic makes
+    // the wave lopsided; the slow gate gives calmer stretches between the big dips.
+    const ph = x * 0.0031 + p5;
+    const gate = 0.6 + 0.4 * Math.sin(x * 0.00071 + p6);
+    const coaster = (Math.sin(ph) + 0.42 * Math.sin(2 * ph + 1.2)) * COASTER_AMP * hill * gate;
+    let y = dropLaunch + kicker + whoop + coaster;
 
     const cell = Math.floor(x / BUMP_CELL);
     const chance = Math.min(0.85, 0.28 + bumps * 0.45);
@@ -96,12 +107,30 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
     }
   }
 
+  // The road through an obstacle zone: a straight line set at the average height
+  // of the hills at both ends of the zone, so the joins are never a wall. Zones
+  // whose obstacle does not need level ground also lean with the hills a little.
+  const TILTING = new Set(['ramp', 'gap', 'hill', 'pendulum']);
+  const MAX_TILT = 0.1;
+  const road = new Map<number, { mid: number; level: number; slope: number }>();
+  for (const f of flats) {
+    const y0 = base(f.x0);
+    const y1 = base(f.x1);
+    const lean = (y1 - y0) / (f.x1 - f.x0);
+    road.set(f.id, {
+      mid: (f.x0 + f.x1) / 2,
+      level: (y0 + y1) / 2,
+      slope: TILTING.has(f.type) ? Math.max(-MAX_TILT, Math.min(MAX_TILT, lean)) : 0,
+    });
+  }
+
   function heightAt(x: number): number {
     let y = base(x);
     for (const f of flats) {
       if (x <= f.x0 || x >= f.x1) continue;
+      const r = road.get(f.id)!;
       const w = smoothstep(f.x0, f.x0 + BLEND, x) * (1 - smoothstep(f.x1 - BLEND, f.x1, x));
-      y = y + (base(f.a) + delta(f, x) - y) * w;
+      y = y + (r.level + r.slope * (x - r.mid) + delta(f, x) - y) * w;
       break; // zones never overlap
     }
     return y;

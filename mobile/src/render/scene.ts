@@ -9,7 +9,7 @@ import { CHUNK_SIZE, PX_PER_METER, SPAWN_X } from '../core/constants';
 import { SEGMENT } from '../core/terrain';
 import { hashFloat } from '../core/rng';
 import type { Feature } from '../core/features';
-import type { Chunk, GameEvent, GameWorld, Prop } from '../core/world';
+import { PENDULUM_TOP, type Chunk, type GameEvent, type GameWorld, type Prop } from '../core/world';
 import type { DecorType, Theme } from '../data/themes';
 
 interface Particle {
@@ -26,6 +26,8 @@ interface Particle {
 
 const SMALL_DECOR: DecorType[] = ['bush', 'rock', 'reed', 'cone'];
 const MAX_PARTICLES = 90;
+/** Hazards that get a warning sign a little before them. */
+const WARNED = new Set<Feature['type']>(['gap', 'ramp', 'falling', 'pendulum', 'seesaw', 'drop']);
 
 export class SceneRenderer {
   private world: GameWorld;
@@ -37,8 +39,11 @@ export class SceneRenderer {
   private far: SkPath;
   private near: SkPath;
   private windows: SkPath[] = [];
-  private skyPaint: SkPaint | null = null;
+  private skyPic: SkPicture | null = null;
+  private skyW = 0;
   private skyH = 0;
+  /** Artwork recorded once and then only placed: see stamp(). */
+  private stamps = new Map<string, SkPicture>();
   private particles: Particle[] = [];
   private clouds: { x: number; y: number; s: number; drift: number }[] = [];
   private shake = 0;
@@ -253,6 +258,9 @@ export class SceneRenderer {
       if (f.x1 < left - 200 || f.x0 > right + 200) continue;
       if (f.type === 'checkpoint') this.drawFlag(c, f.a, w.passed.has(f.id));
       else if (f.type === 'bridge' || f.type === 'platform') this.drawPosts(c, f);
+      else if (f.type === 'seesaw') this.drawPivot(c, f);
+      else if (f.type === 'pendulum') this.drawGantry(c, f);
+      if (WARNED.has(f.type)) this.drawWarning(c, f.type === 'drop' ? f.a - 220 : f.a - 430, f.type);
     }
     this.drawFinish(c);
 
@@ -277,24 +285,26 @@ export class SceneRenderer {
 
   private drawSky(c: SkCanvas, W: number, H: number, base: number): void {
     const th = this.th;
-    if (!this.skyPaint || this.skyH !== H) {
+    if (!this.skyPic || this.skyW !== W || this.skyH !== H) {
+      this.skyW = W;
       this.skyH = H;
-      this.skyPaint = Skia.Paint();
-      this.skyPaint.setShader(
-        Skia.Shader.MakeLinearGradient({ x: 0, y: 0 }, { x: 0, y: H }, [Skia.Color(th.skyTop), Skia.Color(th.skyBottom)], null, TileMode.Clamp),
-      );
+      // gradient, stars, sun and glow never change: one picture, one draw call per frame
+      this.skyPic = record(W, H, (k) => {
+        const sky = Skia.Paint();
+        sky.setShader(Skia.Shader.MakeLinearGradient({ x: 0, y: 0 }, { x: 0, y: H }, [Skia.Color(th.skyTop), Skia.Color(th.skyBottom)], null, TileMode.Clamp));
+        k.drawRect(tmpRect(0, 0, W, H), sky);
+        if (th.night) {
+          const star = fill('#ffffff', 0.8);
+          for (let i = 0; i < 40; i++) k.drawCircle(hashFloat(5, i) * W, hashFloat(6, i) * H * 0.55, 0.8 + hashFloat(7, i) * 1.4, star);
+        }
+        const sunX = W - 150 * base;
+        const sunY = 105 * base;
+        k.drawCircle(sunX, sunY, 74 * base, fill(th.sun, 0.14));
+        k.drawCircle(sunX, sunY, 42 * base, fill(th.sun, 0.95));
+        if (th.backdrop === 'volcano') k.drawCircle(W * 0.5, H * 0.6, 260 * base, fill('#ff5a1a', 0.18));
+      });
     }
-    c.drawRect(tmpRect(0, 0, W, H), this.skyPaint);
-
-    if (th.night) {
-      const star = fill('#ffffff', 0.8);
-      for (let i = 0; i < 40; i++) c.drawCircle(hashFloat(5, i) * W, hashFloat(6, i) * H * 0.55, 0.8 + hashFloat(7, i) * 1.4, star);
-    }
-    const sunX = W - 150 * base;
-    const sunY = 105 * base;
-    c.drawCircle(sunX, sunY, 74 * base, fill(th.sun, 0.14));
-    c.drawCircle(sunX, sunY, 42 * base, fill(th.sun, 0.95));
-    if (th.backdrop === 'volcano') c.drawCircle(W * 0.5, H * 0.6, 260 * base, fill('#ff5a1a', 0.18));
+    c.drawPicture(this.skyPic);
 
     if (!th.night) {
       const cloud = fill('#ffffff', 0.88);
@@ -344,52 +354,71 @@ export class SceneRenderer {
     for (const wheel of v.wheels) drawPictureAt(c, this.art.wheel, wheel.position.x, wheel.position.y, wheel.angle);
   }
 
+  /**
+   * Draw a piece of fixed artwork at a position. The shapes are recorded into a
+   * picture the first time and replayed afterwards, so a crate or a warning sign
+   * costs one draw call per frame instead of one per shape, and builds no paths.
+   */
+  private stamp(c: SkCanvas, key: string, x: number, y: number, angle: number, draw: (k: SkCanvas) => void): void {
+    let pic = this.stamps.get(key);
+    if (!pic) {
+      pic = record(760, 800, draw, -380, -440);
+      this.stamps.set(key, pic);
+    }
+    drawPictureAt(c, pic, x, y, angle);
+  }
+
   private drawPickups(c: SkCanvas, left: number, right: number, timeMs: number): void {
-    const gold = fill('#ffd23f');
-    const goldDark = fill('#c8961e');
     for (const p of this.world.pickups) {
       if (p.x < left || p.x > right) continue;
       if (p.type === 'coin') {
-        const sx = Math.abs(Math.cos(timeMs / 260 + p.phase)) * 0.8 + 0.2;
+        let pic = this.stamps.get('coin');
+        if (!pic) {
+          pic = record(40, 40, (k) => {
+            k.drawCircle(0, 0, 13, fill('#c8961e'));
+            k.drawCircle(0, 0, 10.5, fill('#ffd23f'));
+            rrect(k, -2, -6, 4, 12, 2, fill('#c8961e'));
+          }, -20, -20);
+          this.stamps.set('coin', pic);
+        }
         c.save();
         c.translate(p.x, p.y);
-        c.scale(sx, 1);
-        c.drawCircle(0, 0, 13, goldDark);
-        c.drawCircle(0, 0, 10.5, gold);
-        rrect(c, -2, -6, 4, 12, 2, goldDark);
+        c.scale(Math.abs(Math.cos(timeMs / 260 + p.phase)) * 0.8 + 0.2, 1); // spinning
+        c.drawPicture(pic);
         c.restore();
       } else {
-        c.save();
-        c.translate(p.x, p.y + Math.sin(timeMs / 300 + p.phase) * 4);
-        c.drawCircle(0, 0, 24, fill('#8dff9b', 0.18));
-        rrect(c, -13, -15, 26, 32, 5, fill('#d6342c'));
-        rrect(c, -13, -3, 26, 8, 0, fill('#ffd23f'));
-        rrect(c, -4, -21, 12, 8, 2, fill('#8f1f1a'));
-        c.restore();
+        this.stamp(c, 'fuel', p.x, p.y + Math.sin(timeMs / 300 + p.phase) * 4, 0, (k) => {
+          k.drawCircle(0, 0, 24, fill('#8dff9b', 0.18));
+          rrect(k, -13, -15, 26, 32, 5, fill('#d6342c'));
+          rrect(k, -13, -3, 26, 8, 0, fill('#ffd23f'));
+          rrect(k, -4, -21, 12, 8, 2, fill('#8f1f1a'));
+        });
       }
     }
   }
 
   private drawFlag(c: SkCanvas, x: number, passed: boolean): void {
-    const y = this.world.surfaceY(x);
-    rrect(c, x - 3, y - 96, 6, 100, 2, fill('#e8ecef'));
-    c.drawPath(poly([x + 3, y - 94, x + 54, y - 80, x + 3, y - 64]), fill(passed ? '#2f9e55' : '#f2742b'));
-    c.drawCircle(x, y - 98, 5, fill('#ffd23f'));
+    this.stamp(c, passed ? 'flag-passed' : 'flag', x, this.world.surfaceY(x), 0, (k) => {
+      rrect(k, -3, -96, 6, 100, 2, fill('#e8ecef'));
+      k.drawPath(poly([3, -94, 54, -80, 3, -64]), fill(passed ? '#2f9e55' : '#f2742b'));
+      k.drawCircle(0, -98, 5, fill('#ffd23f'));
+    });
   }
 
   private drawFinish(c: SkCanvas): void {
     const w = this.world;
     const x = w.finishX;
     if (Math.abs(x - this.camX) > 3000) return;
-    const y = w.surfaceY(x) + 4;
-    const pole = fill('#e8ecef');
-    rrect(c, x - 70, y - 150, 9, 150, 3, pole);
-    rrect(c, x + 61, y - 150, 9, 150, 3, pole);
-    const white = fill('#ffffff');
-    const black = fill('#16181c');
-    for (let i = 0; i < 10; i++) {
-      for (let j = 0; j < 2; j++) c.drawRect(rect(x - 61 + i * 12.2, y - 150 + j * 12, 12.2, 12), (i + j) % 2 ? black : white);
-    }
+    this.stamp(c, 'finish', x, w.surfaceY(x) + 4, 0, (k) => {
+      const pole = fill('#e8ecef');
+      rrect(k, -70, -150, 9, 150, 3, pole);
+      rrect(k, 61, -150, 9, 150, 3, pole);
+      const white = fill('#ffffff');
+      const black = fill('#16181c');
+      for (let i = 0; i < 10; i++) {
+        for (let j = 0; j < 2; j++) k.drawRect(rect(-61 + i * 12.2, -150 + j * 12, 12.2, 12), (i + j) % 2 ? black : white);
+      }
+    });
   }
 
   /** Anchor posts at both ends of a bridge or platform. */
@@ -407,69 +436,150 @@ export class SceneRenderer {
     }
   }
 
+  /** Yellow diamond on a post, a little before a hazard. */
+  private drawWarning(c: SkCanvas, x: number, type: Feature['type']): void {
+    const icon = type === 'gap' || type === 'drop' ? 'hole' : type === 'ramp' || type === 'seesaw' ? 'ramp' : 'mark';
+    const hot = type === 'falling' || type === 'pendulum';
+    this.stamp(c, `warn-${icon}-${hot ? 1 : 0}`, x, this.world.surfaceY(x), 0, (k) => {
+      rrect(k, -2.5, -70, 5, 74, 2, fill('#5b6470'));
+      k.translate(0, -84);
+      k.drawPath(poly([0, -24, 24, 0, 0, 24, -24, 0]), fill('#16181c'));
+      k.drawPath(poly([0, -20, 20, 0, 0, 20, -20, 0]), fill(hot ? '#f2742b' : '#ffd23f'));
+      const ink = fill('#16181c');
+      if (icon === 'hole') {
+        // broken road: two slabs with a hole between them
+        k.drawPath(poly([-13, 3, -3, 3, -3, 8, -13, 8]), ink);
+        k.drawPath(poly([5, 6, 13, 6, 13, 11, 5, 11]), ink);
+        k.drawPath(poly([-2, -9, 4, -9, 1, -2]), ink);
+      } else if (icon === 'ramp') {
+        k.drawPath(poly([-12, 9, 12, 9, 12, -8]), ink);
+      } else {
+        // exclamation mark
+        rrect(k, -3, -13, 6, 15, 2, ink);
+        k.drawCircle(0, 9, 3.4, ink);
+      }
+    });
+  }
+
+  /** The stand a seesaw plank pivots on. */
+  private drawPivot(c: SkCanvas, f: Feature): void {
+    const h = Math.round(f.h);
+    this.stamp(c, `pivot-${h}`, (f.a + f.b) / 2, this.world.surfaceY(f.a), 0, (k) => {
+      k.drawPath(poly([-26, 4, 0, -h - 2, 26, 4]), fill('#4a4f5c'));
+      k.drawPath(poly([-12, 4, 0, -h + 10, 12, 4]), fill('#6b7078'));
+      k.drawCircle(0, -h, 6, fill('#16181c'));
+    });
+  }
+
+  /** Frame and chain of a wrecking ball. */
+  private drawGantry(c: SkCanvas, f: Feature): void {
+    const y = this.world.surfaceY(f.a);
+    const top = y - PENDULUM_TOP;
+    this.stamp(c, 'gantry', f.a, y, 0, (k) => {
+      const beam = stroke('#3a3f48', 9);
+      k.drawLine(-78, 4, -10, -PENDULUM_TOP, beam);
+      k.drawLine(78, 4, 10, -PENDULUM_TOP, beam);
+      k.drawLine(-44, -PENDULUM_TOP * 0.5, 44, -PENDULUM_TOP * 0.5, stroke('#3a3f48', 5));
+      rrect(k, -20, -PENDULUM_TOP - 8, 40, 14, 4, fill('#f2c94c'));
+    });
+    for (const p of this.world.props) {
+      if (p.kind === 'ball' && p.fid === f.id) c.drawLine(f.a, top, p.body.position.x, p.body.position.y, stroke('#16181c', 4));
+    }
+  }
+
   private drawProp(c: SkCanvas, p: Prop): void {
     const b = p.body;
     const th = this.th;
-    c.save();
-    c.translate(b.position.x, b.position.y);
-    if (b.angle) c.rotate(b.angle * DEG, 0, 0);
-    switch (p.kind) {
-      case 'rock':
-        c.drawCircle(0, 0, p.r, fill(th.rock));
-        c.drawCircle(-p.r * 0.2, -p.r * 0.35, p.r * 0.62, fill(shade(th.rock, 0.16)));
-        break;
-      case 'log':
-        c.drawCircle(0, 0, p.r, fill('#7a4f28'));
-        c.drawCircle(0, 0, p.r * 0.74, fill('#c89a5e'));
-        c.drawCircle(0, 0, p.r * 0.46, stroke('#9a6f3a', 1.5));
-        c.drawCircle(0, 0, p.r * 0.16, fill('#9a6f3a'));
-        break;
-      case 'crate':
-        rrect(c, -p.w / 2, -p.h / 2, p.w, p.h, 3, fill('#8a5f2c'));
-        rrect(c, -p.w / 2 + 3, -p.h / 2 + 3, p.w - 6, p.h - 6, 2, fill('#c79552'));
-        c.drawLine(-p.w / 2 + 4, -p.h / 2 + 4, p.w / 2 - 4, p.h / 2 - 4, stroke('#8a5f2c', 3));
-        c.drawLine(p.w / 2 - 4, -p.h / 2 + 4, -p.w / 2 + 4, p.h / 2 - 4, stroke('#8a5f2c', 3));
-        break;
-      case 'barrel':
-        rrect(c, -p.w / 2, -p.h / 2, p.w, p.h, 7, fill(p.variant % 2 ? '#2f6fa8' : '#c0392b'));
-        rrect(c, -p.w / 2, -p.h * 0.28, p.w, 4, 0, fill('#16181c', 0.55));
-        rrect(c, -p.w / 2, p.h * 0.2, p.w, 4, 0, fill('#16181c', 0.55));
-        break;
-      case 'boulder':
-      case 'fallrock': {
-        const col = shade(th.rock, -0.15);
-        c.drawCircle(0, 0, p.r, fill(col));
-        c.drawCircle(-p.r * 0.25, -p.r * 0.25, p.r * 0.55, fill(shade(col, 0.2)));
-        c.drawLine(-p.r * 0.5, p.r * 0.3, p.r * 0.2, p.r * 0.1, stroke(shade(col, -0.35), 2));
-        break;
-      }
-      case 'plank':
-        rrect(c, -p.w / 2 + 1, -p.h / 2, p.w - 2, p.h, 3, fill(p.variant % 2 ? '#a9763e' : '#96652f'));
-        c.drawCircle(-p.w / 2 + 6, 0, 2, fill('#3a2a18'));
-        c.drawCircle(p.w / 2 - 6, 0, 2, fill('#3a2a18'));
-        break;
-      case 'platform': {
-        const w = Math.round(p.w);
-        rrect(c, -w / 2, -p.h / 2, w, p.h, 6, fill('#4a4f5c'));
-        for (let x = -w / 2 + 10; x < w / 2 - 24; x += 34) c.drawPath(poly([x, -p.h / 2 + 4, x + 14, -p.h / 2 + 4, x + 24, -p.h / 2 + 14, x + 10, -p.h / 2 + 14]), fill('#f2c94c'));
-        rrect(c, -6, p.h / 2, 12, 260, 0, fill('#2c3038')); // piston
-        break;
-      }
+    // soft shadow under anything loose that is near the ground
+    if (!b.isStatic && p.kind !== 'plank' && p.kind !== 'seesaw' && p.kind !== 'ball') {
+      const gy = this.world.surfaceY(b.position.x);
+      const lift = gy - b.position.y - p.r;
+      if (lift > -6 && lift < 40) c.drawOval(tmpRect(b.position.x - p.r, gy - 3, p.r * 2, 7), fill('#000000', lift > 16 ? 0.1 : 0.2));
     }
-    c.restore();
+    const r = Math.round(p.r);
+    const w = Math.round(p.w);
+    const h = Math.round(p.h);
+    this.stamp(c, `${p.kind}-${r}-${w}-${h}-${p.variant % 2}`, b.position.x, b.position.y, b.angle, (k) => {
+      const outline = stroke('#101216', 2, 0.55);
+      switch (p.kind) {
+        case 'rock':
+          k.drawCircle(0, 0, r, fill(th.rock));
+          k.drawCircle(-r * 0.2, -r * 0.35, r * 0.62, fill(shade(th.rock, 0.16)));
+          break;
+        case 'log':
+          k.drawCircle(0, 0, r, fill('#7a4f28'));
+          k.drawCircle(0, 0, r * 0.74, fill('#c89a5e'));
+          k.drawCircle(0, 0, r * 0.46, stroke('#9a6f3a', 1.5));
+          k.drawCircle(0, 0, r * 0.16, fill('#9a6f3a'));
+          k.drawLine(0, 0, r * 0.7, 0, stroke('#9a6f3a', 1.5));
+          k.drawCircle(0, 0, r, outline);
+          break;
+        case 'crate':
+          rrect(k, -w / 2, -h / 2, w, h, 3, fill('#8a5f2c'));
+          rrect(k, -w / 2 + 3, -h / 2 + 3, w - 6, h - 6, 2, fill('#c79552'));
+          k.drawLine(-w / 2 + 4, -h / 2 + 4, w / 2 - 4, h / 2 - 4, stroke('#8a5f2c', 3));
+          k.drawLine(w / 2 - 4, -h / 2 + 4, -w / 2 + 4, h / 2 - 4, stroke('#8a5f2c', 3));
+          k.drawRect(rect(-w / 2, -h / 2, w, h), outline);
+          break;
+        case 'barrel':
+          rrect(k, -w / 2, -h / 2, w, h, 7, fill(p.variant % 2 ? '#2f6fa8' : '#c0392b'));
+          rrect(k, -w / 2, Math.round(-h * 0.28), w, 4, 0, fill('#16181c', 0.55));
+          rrect(k, -w / 2, Math.round(h * 0.2), w, 4, 0, fill('#16181c', 0.55));
+          rrect(k, -w / 2 + 3, -h / 2 + 2, 4, h - 4, 2, fill('#ffffff', 0.22));
+          k.drawRRect(Skia.RRectXY(rect(-w / 2, -h / 2, w, h), 7, 7), outline);
+          break;
+        case 'boulder':
+        case 'fallrock': {
+          const col = shade(th.rock, -0.15);
+          k.drawCircle(0, 0, r, fill(col));
+          k.drawCircle(-r * 0.25, -r * 0.25, r * 0.55, fill(shade(col, 0.2)));
+          k.drawLine(-r * 0.5, r * 0.3, r * 0.2, r * 0.1, stroke(shade(col, -0.35), 2));
+          k.drawCircle(0, 0, r, outline);
+          break;
+        }
+        case 'plank':
+          rrect(k, -w / 2 + 1, -h / 2, w - 2, h, 3, fill(p.variant % 2 ? '#a9763e' : '#96652f'));
+          k.drawCircle(-w / 2 + 6, 0, 2, fill('#3a2a18'));
+          k.drawCircle(w / 2 - 6, 0, 2, fill('#3a2a18'));
+          break;
+        case 'seesaw':
+          rrect(k, -w / 2, -h / 2, w, h, 4, fill('#a9763e'));
+          rrect(k, -w / 2, -h / 2, w, 3, 2, fill('#c79552'));
+          for (const sx of [-w / 2 + 6, w / 2 - 34]) {
+            rrect(k, sx, -h / 2, 28, h, 3, fill('#f2c94c'));
+            k.drawPath(poly([sx + 6, -h / 2, sx + 13, -h / 2, sx + 7, h / 2, sx, h / 2]), fill('#16181c'));
+            k.drawPath(poly([sx + 20, -h / 2, sx + 27, -h / 2, sx + 21, h / 2, sx + 14, h / 2]), fill('#16181c'));
+          }
+          k.drawCircle(0, 0, 5, fill('#16181c'));
+          break;
+        case 'ball':
+          k.drawCircle(0, 0, r, fill('#2c3038'));
+          k.drawCircle(-r * 0.28, -r * 0.3, r * 0.5, fill('#4a505c'));
+          k.drawCircle(-r * 0.38, -r * 0.42, r * 0.16, fill('#8a919c'));
+          k.drawCircle(0, 0, r, stroke('#101216', 3));
+          break;
+        case 'platform':
+          rrect(k, -w / 2, -h / 2, w, h, 6, fill('#4a4f5c'));
+          for (let x = -w / 2 + 10; x < w / 2 - 24; x += 34) k.drawPath(poly([x, -h / 2 + 4, x + 14, -h / 2 + 4, x + 24, -h / 2 + 14, x + 10, -h / 2 + 14]), fill('#f2c94c'));
+          rrect(k, -6, h / 2, 12, 260, 0, fill('#2c3038')); // piston
+          break;
+      }
+    });
 
     // shadow on the ground where a falling rock will land
     if (p.kind === 'fallrock' && b.speed > 1.5) {
       const gy = this.world.surfaceY(b.position.x);
       if (gy - b.position.y > 60) {
         c.drawOval(tmpRect(b.position.x - p.r * 1.4, gy - 5, p.r * 2.8, 10), fill('#e0463c', 0.55));
-        c.drawPath(poly([b.position.x - 9, gy - 34, b.position.x + 9, gy - 34, b.position.x, gy - 16]), fill('#e0463c', 0.9));
+        this.stamp(c, 'fall-mark', b.position.x, gy, 0, (k) => k.drawPath(poly([-9, -34, 9, -34, 0, -16]), fill('#e0463c', 0.9)));
       }
     }
   }
 
   dispose(): void {
     this.chunkPics.clear();
+    this.stamps.clear();
+    this.skyPic = null;
     this.liquidPaths.clear();
     this.particles = [];
   }

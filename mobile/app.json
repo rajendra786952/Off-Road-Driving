@@ -3,7 +3,7 @@
     "name": "Offroad Racing 4x4",
     "slug": "offroad-racing-4x4",
     "version": "1.0.0",
-    "orientation": "default",
+    "orientation": "landscape",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "ios": {
@@ -30,6 +30,11 @@
       "expo-screen-orientation",
       "expo-asset"
     ],
-    "backgroundColor": "#0e161d"
+    "backgroundColor": "#0e161d",
+    "extra": {
+      "eas": {
+        "projectId": "61e9bd67-b4ba-4aaa-a776-683881698e26"
+      }
+    }
   }
 }

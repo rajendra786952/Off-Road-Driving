@@ -88,10 +88,12 @@ export class HazardView {
         { geo: new THREE.BoxGeometry(0.8, 0.16, 1.02), matrix: M(0, 0.08, 0), color: [0.5, 0.5, 0.48] },
         { geo: new THREE.BoxGeometry(0.64, 0.14, 1.02), matrix: M(0, 0.62, 0), color: [0.8, 0.16, 0.1] }
       ]));
-      const im = this._inst(g, blocks.length);
+      const barrier = this.world.pack && this.world.pack.geo.road_barrier;
+      const im = this._inst(barrier ? this.keep(barrier.clone()) : g, blocks.length);
       blocks.forEach((o, i) => {
-        this.q.setFromAxisAngle(this.up, o.rot);
-        im.setMatrixAt(i, this.m4.compose(this.v.set(o.x, tr.heightAt(o.x, o.z) - 0.05, o.z), this.q, this.sc.set(1, 1, 1)));
+        // the pack's barrier is modelled 2 m long across; turn it along the road and size it to one block
+        this.q.setFromAxisAngle(this.up, o.rot + (barrier ? Math.PI / 2 : 0));
+        im.setMatrixAt(i, this.m4.compose(this.v.set(o.x, tr.heightAt(o.x, o.z) - 0.05, o.z), this.q, barrier ? this.sc.set(0.56, 1.2, 1.6) : this.sc.set(1, 1, 1)));
       });
       im.count = blocks.length;
     }
@@ -187,6 +189,13 @@ export class HazardView {
       { geo: new THREE.ConeGeometry(0.025, 0.24, 5), matrix: M(0.1, 0.62, 0.74, 1, 1, 1, 1.9, 0, 0), color: [1.2, 1.2, 1.1] },       // tusks
       { geo: new THREE.ConeGeometry(0.025, 0.24, 5), matrix: M(-0.1, 0.62, 0.74, 1, 1, 1, 1.9, 0, 0), color: [1.2, 1.2, 1.1] }
     ]);
+    // asset-pack tracks: the pack's cone, crate and barrel, and its animals
+    const pk = this.world.pack;
+    this.pkSize = {};
+    if (pk) {
+      for (const [k, model] of [['cone', 'traffic_cone'], ['crate', 'crate'], ['barrel', 'barrel']]) if (pk.geo[model]) { g[k].dispose(); g[k] = pk.geo[model].clone(); }
+      for (const sp of ['deer', 'cow', 'goat', 'elephant']) if (pk.geo[sp]) { g['pk_' + sp] = pk.geo[sp].clone(); this.pkSize[sp] = pk.size[sp]; }
+    }
     for (const k in g) this.keep(g[k]);
     this.im = {
       cone: this._inst(g.cone, count((b) => b.kind === 'cone')),
@@ -197,7 +206,9 @@ export class HazardView {
       quad: this._inst(g.quad, count((b) => b.kind === 'animal' && b.sp !== 'elephant')),
       elephant: this._inst(g.elephant, count((b) => b.sp === 'elephant'))
     };
+    for (const sp in this.pkSize) this.im['pk_' + sp] = this._inst(g['pk_' + sp], count((b) => b.sp === sp));
     this.cnt = { cone: 0, crate: 0, barrel: 0, branch: 0, rock: 0, quad: 0, elephant: 0 };
+    for (const sp in this.pkSize) this.cnt['pk_' + sp] = 0;
   }
 
   // ------------------------------------------------------------------ trees that come down
@@ -269,7 +280,8 @@ export class HazardView {
         const moving = Math.hypot(b.vx, b.vz);
         this.q.setFromAxisAngle(this.up, b.rot);
         if (moving > 0.2) { this.q2.setFromAxisAngle(this.ax, Math.sin(b.spin * 5) * 0.05); this.q.multiply(this.q2); y += Math.abs(Math.sin(b.spin * 5)) * 0.05 * S.tall; }
-        if (key === 'elephant') this.sc.set(S.len / 1.5, S.tall / 1.05, S.len / 1.5);
+        if (this.pkSize[b.sp]) { key = 'pk_' + b.sp; const z = this.pkSize[b.sp]; this.sc.set(S.len / z[2], S.tall / z[1], S.len / z[2]); }
+        else if (key === 'elephant') this.sc.set(S.len / 1.5, S.tall / 1.05, S.len / 1.5);
         else this.sc.set((S.len / 1.25) * w, S.tall / 1.16, S.len / 1.25);
       } else {
         this.q.setFromAxisAngle(this.up, b.rot);
@@ -278,7 +290,9 @@ export class HazardView {
       }
       const m = im[key], i = cnt[key]++;
       m.setMatrixAt(i, this.m4.compose(this.v.set(b.x, y, b.z), this.q, this.sc));
-      if (b.kind === 'animal') { const c = b.spec.color, k = 0.9 + (b.id % 4) * 0.06; this.col.setRGB(c[0] * k, c[1] * k, c[2] * k); }
+      if (b.kind === 'animal' && this.pkSize[b.sp]) this.col.setRGB(1, 1, 1);
+      else if (b.kind === 'animal') { const c = b.spec.color, k = 0.9 + (b.id % 4) * 0.06; this.col.setRGB(c[0] * k, c[1] * k, c[2] * k); }
+      else if (b.kind === 'barrel' && this.world.pack) this.col.setRGB(1, 1, 1);
       else if (b.kind === 'barrel') this.col.setRGB(...(b.id % 3 === 0 ? [0.7, 0.14, 0.1] : b.id % 3 === 1 ? [0.12, 0.3, 0.55] : [0.75, 0.6, 0.1]));
       else if (key === 'rock') { const k = 0.82 + (b.id % 5) * 0.06; this.col.setRGB(k, k, k); }
       else this.col.setRGB(1, 1, 1);

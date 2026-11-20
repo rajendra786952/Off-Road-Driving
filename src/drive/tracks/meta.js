@@ -103,5 +103,8 @@ export const TRACK_META = [
   { id: 'tour-swamp', name: 'Swamp Adventure', region: 'tour', env: 'mud', weather: 'overcast', weatherPlan: [[0, 'overcast'], [0.55, 'rain']], time: 'day', reward: 700, par: P(420), rec: 'Stock vehicle, a light foot',
     blurb: 'Waterlogged ground, ponds and a river to wade, fallen trees and a firm causeway through deep mud.' },
   { id: 'tour-snow', name: 'Snow Expedition', region: 'tour', env: 'snow', weather: 'snow', weatherPlan: [[0, 'snow'], [0.6, 'clear']], time: 'day', reward: 800, par: P(450), rec: 'Stock vehicle, patience',
-    blurb: 'A snowy forest, a frozen lake of glass ice, deep drifts, a rocky pass and a bridge over the gorge.' }
+    blurb: 'A snowy forest, a frozen lake of glass ice, deep drifts, a rocky pass and a bridge over the gorge.' },
+  // ---- 10 Brava Coast (asset pack)
+  { id: 'brava-coast', name: 'Brava Coast Run', region: 'coast', env: 'jungle', weather: 'clear', hours: [15.2, 18.3], reward: 900, par: P(420), rec: 'Stock vehicle', pack: true,
+    blurb: 'Harbour town, coast road, docks, a wooden bridge, jungle, hairpins, a tunnel and a stone bridge to the lookout. Ends at sunset.' }
 ];

@@ -98,7 +98,7 @@ function Home({ go, save, shell, onDrive }) {
       <div className="home-grid">
         <div className="home-left">
           <div className="logo"><span>TRAIL</span><b>TORQUE</b></div>
-          <p className="tag">Eight regions. Forty expeditions. Five open tours.</p>
+          <p className="tag">Eight regions. Forty expeditions. Five open tours. One coast run.</p>
           {rs && (
             <button className="cta" style={{ marginBottom: '0.6em' }} onClick={() => { sfx.go(); onDrive(rs.trackId, rs.difficulty, undefined, { resume: true }); }}>
               <small>RESUME YOUR RUN</small>

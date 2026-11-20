@@ -28,6 +28,7 @@ const buildingsNear = (tr, s0, s1) => {
 test('every track is a journey through areas, and its road is exactly the road it was', () => {
   let coasts = 0;
   for (const def of TRACKS) {
+    if (def.pack) continue;      // the asset-pack track authors its own areas (tested below)
     const tr = def.build();
     const j = journeyOf(tr).map((a) => a[0]);
     assert.ok(j.length >= 3, `${def.id}: only ${j.join(' > ')}`);
@@ -128,4 +129,45 @@ test('old saves: a removed difficulty or run type is repaired on load instead of
   // a normal saved run survives
   old.resume = { trackId: 'forest-entry', difficulty: 'standard', vehicle: 'mountain-jeep', cp: 1, state: { v: 1, cpNext: 1 } };
   assert.ok(migrateSave(JSON.parse(JSON.stringify(old))).resume);
+});
+
+test('Brava Coast Run: the asset-pack track uses every model in the pack and all of them exist on disk', async () => {
+  const fs = await import('node:fs');
+  const { PACK_MODELS, PACK_BUILDINGS, PACK_TREES, PACK_GROUND } = await import('../src/drive/render/pack.js');
+  const dir = new URL('../public/Trail_Torque_Balanced_Asset_Pack/', import.meta.url);
+  for (const [name, folder] of Object.entries(PACK_MODELS)) assert.ok(fs.existsSync(new URL(`models/${folder}/${name}.glb`, dir)), `${name}.glb is missing`);
+  for (const g of PACK_GROUND) for (const f of [`${g}_color.jpg`, `${g}_normal.png`]) assert.ok(fs.existsSync(new URL('textures/ground/' + f, dir)), f);
+  for (const f of ['textures/water/water_normal.png', 'textures/water/water_foam_color.png', 'textures/buildings/office_facade.jpg', 'environments/tropical_day_2k.hdr', 'environments/tropical_sunset_2k.hdr']) assert.ok(fs.existsSync(new URL(f, dir)), f);
+  const def = getTrackDef('brava-coast');
+  const tr = def.build();
+  assert.ok(def.pack && tr.meta.pack && tr.length > 3000 && tr.checkpoints.length >= 5 && tr.bridges.length === 2 && tr.tunnels.length === 1);
+  assert.deepEqual(validateTrack(tr), []);
+  // where each model is used: placed beside the road, as a building, tree or boulder, as a bridge, or by the obstacle layer / the truck
+  const used = new Set(tr.decos.map((d) => d.model));
+  for (const list of Object.values(PACK_BUILDINGS)) list.forEach((m) => used.add(m));
+  for (const [m] of Object.values(PACK_TREES)) used.add(m);
+  for (const b of tr.bridges) used.add(b.model);
+  for (const m of ['boulder_01', 'boulder_02', 'boulder_03', 'boulder_04', 'tunnel_portal', 'traffic_cone', 'crate', 'barrel', 'road_barrier', 'offroad_jeep']) used.add(m);
+  const unused = Object.keys(PACK_MODELS).filter((m) => !used.has(m));
+  assert.deepEqual(unused, [], 'pack models the track never shows');
+  // the areas name tree templates the pack provides, and every building kind has models
+  for (const a of tr.biomes) { for (const k of a.kinds) assert.ok(PACK_TREES[k], `unknown tree template ${k}`); if (a.urban) assert.ok(PACK_BUILDINGS[a.urban.kind]); }
+  // placed models are solid, stand on dry land, and never on the road
+  for (const d of tr.decos) {
+    tr.surfaceAt(d.x, d.z);
+    assert.ok(!tr.sq.onRoad, `${d.model} stands on the road at s=${d.s.toFixed(0)}`);
+    assert.ok(tr.heightAt(d.x, d.z) > tr.seaLevel + 0.3, `${d.model} is in the sea`);
+  }
+  const lh = tr.decos.find((d) => d.model === 'lighthouse');
+  let hit = false;
+  tr.collidersNear(lh.x + 1, lh.z, (p) => { if (p.type === 'deco' && p.model === 'lighthouse' && p.r > 1) hit = true; });
+  assert.ok(hit, 'the lighthouse has a collider');
+  // sea beside the coast road, and both bridges and the tunnel are on the route
+  const sea = tr.roadPose(700, -90);
+  assert.ok(tr.heightAt(sea.x, sea.z) < tr.seaLevel);
+  // the test driver finishes it in a stock jeep, with obstacles on
+  const ss = new DriveSession(tr, buildParams(def.bot.vehicle, def.bot.ups, def.bot.gear), { obstacles: true });
+  const res = botRun(ss, 2400);
+  assert.ok(res.finished && res.recoveries <= 1 && res.total <= def.par.bronze, `finished=${res.finished} recoveries=${res.recoveries} time=${res.total.toFixed(0)}`);
+  tr.setLayer(null);
 });

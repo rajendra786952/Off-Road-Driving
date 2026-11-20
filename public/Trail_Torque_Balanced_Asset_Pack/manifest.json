@@ -1,0 +1,226 @@
+[
+  {
+    "path": "README.md",
+    "size_bytes": 2332
+  },
+  {
+    "path": "environments/tropical_day_2k.hdr",
+    "size_bytes": 8388659
+  },
+  {
+    "path": "environments/tropical_sunset_2k.hdr",
+    "size_bytes": 8388659
+  },
+  {
+    "path": "textures/water/water_foam_color.png",
+    "size_bytes": 216926
+  },
+  {
+    "path": "textures/water/water_normal.png",
+    "size_bytes": 5755
+  },
+  {
+    "path": "textures/ground/rock_color.jpg",
+    "size_bytes": 529434
+  },
+  {
+    "path": "textures/ground/grass_color.jpg",
+    "size_bytes": 529617
+  },
+  {
+    "path": "textures/ground/mud_color.jpg",
+    "size_bytes": 529379
+  },
+  {
+    "path": "textures/ground/sand_normal.png",
+    "size_bytes": 3124673
+  },
+  {
+    "path": "textures/ground/gravel_color.jpg",
+    "size_bytes": 529845
+  },
+  {
+    "path": "textures/ground/mud_normal.png",
+    "size_bytes": 3124383
+  },
+  {
+    "path": "textures/ground/gravel_normal.png",
+    "size_bytes": 3124758
+  },
+  {
+    "path": "textures/ground/sand_color.jpg",
+    "size_bytes": 529806
+  },
+  {
+    "path": "textures/ground/dirt_color.jpg",
+    "size_bytes": 529635
+  },
+  {
+    "path": "textures/ground/dirt_normal.png",
+    "size_bytes": 3124741
+  },
+  {
+    "path": "textures/ground/rock_normal.png",
+    "size_bytes": 3124689
+  },
+  {
+    "path": "textures/ground/asphalt_normal.png",
+    "size_bytes": 3124463
+  },
+  {
+    "path": "textures/ground/asphalt_color.jpg",
+    "size_bytes": 529479
+  },
+  {
+    "path": "textures/ground/grass_normal.png",
+    "size_bytes": 3124663
+  },
+  {
+    "path": "textures/buildings/office_facade.jpg",
+    "size_bytes": 107884
+  },
+  {
+    "path": "models/landmarks/construction_crane.glb",
+    "size_bytes": 2328
+  },
+  {
+    "path": "models/landmarks/lighthouse.glb",
+    "size_bytes": 3424
+  },
+  {
+    "path": "models/landmarks/water_tower.glb",
+    "size_bytes": 3584
+  },
+  {
+    "path": "models/props/barrel.glb",
+    "size_bytes": 2308
+  },
+  {
+    "path": "models/props/traffic_cone.glb",
+    "size_bytes": 1532
+  },
+  {
+    "path": "models/props/street_lamp.glb",
+    "size_bytes": 10020
+  },
+  {
+    "path": "models/props/road_barrier.glb",
+    "size_bytes": 1228
+  },
+  {
+    "path": "models/props/tunnel_portal.glb",
+    "size_bytes": 2136
+  },
+  {
+    "path": "models/props/wood_fence_section.glb",
+    "size_bytes": 3004
+  },
+  {
+    "path": "models/props/crate.glb",
+    "size_bytes": 1256
+  },
+  {
+    "path": "models/props/chevron_sign.glb",
+    "size_bytes": 1956
+  },
+  {
+    "path": "models/animals/deer.glb",
+    "size_bytes": 12416
+  },
+  {
+    "path": "models/animals/cow.glb",
+    "size_bytes": 12424
+  },
+  {
+    "path": "models/animals/goat.glb",
+    "size_bytes": 12424
+  },
+  {
+    "path": "models/animals/elephant.glb",
+    "size_bytes": 12496
+  },
+  {
+    "path": "models/vehicles/offroad_jeep.glb",
+    "size_bytes": 29612
+  },
+  {
+    "path": "models/trees/palm_tree_02.glb",
+    "size_bytes": 5928
+  },
+  {
+    "path": "models/trees/jungle_tree_01.glb",
+    "size_bytes": 15404
+  },
+  {
+    "path": "models/trees/jungle_tree_02.glb",
+    "size_bytes": 15404
+  },
+  {
+    "path": "models/trees/pine_tree_01.glb",
+    "size_bytes": 4716
+  },
+  {
+    "path": "models/trees/palm_tree_01.glb",
+    "size_bytes": 5928
+  },
+  {
+    "path": "models/bridges/wooden_bridge.glb",
+    "size_bytes": 17416
+  },
+  {
+    "path": "models/bridges/stone_steel_bridge.glb",
+    "size_bytes": 17416
+  },
+  {
+    "path": "models/buildings/skyscraper_03.glb",
+    "size_bytes": 38332
+  },
+  {
+    "path": "models/buildings/village_house_02.glb",
+    "size_bytes": 5372
+  },
+  {
+    "path": "models/buildings/office_tower_02.glb",
+    "size_bytes": 16924
+  },
+  {
+    "path": "models/buildings/city_house_01.glb",
+    "size_bytes": 5388
+  },
+  {
+    "path": "models/buildings/warehouse_01.glb",
+    "size_bytes": 5452
+  },
+  {
+    "path": "models/buildings/industrial_shed_02.glb",
+    "size_bytes": 5432
+  },
+  {
+    "path": "models/buildings/office_tower_01.glb",
+    "size_bytes": 21668
+  },
+  {
+    "path": "models/rocks/cliff_piece_01.glb",
+    "size_bytes": 8376
+  },
+  {
+    "path": "models/rocks/boulder_01.glb",
+    "size_bytes": 7436
+  },
+  {
+    "path": "models/rocks/boulder_04.glb",
+    "size_bytes": 7440
+  },
+  {
+    "path": "models/rocks/boulder_03.glb",
+    "size_bytes": 7440
+  },
+  {
+    "path": "models/rocks/boulder_02.glb",
+    "size_bytes": 7440
+  },
+  {
+    "path": "models/rocks/cliff_piece_02.glb",
+    "size_bytes": 8376
+  }
+]

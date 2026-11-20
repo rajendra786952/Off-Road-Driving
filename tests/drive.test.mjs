@@ -33,12 +33,12 @@ function car(track, ups, gear, s = 20) {
 const drive = (v, sec, inp) => { for (let i = 0; i < sec / DT; i++) v.step(DT, inp); };
 const reached = (tr, v) => tr.S[tr.locateMain(v.p[0], v.p[2], 0)];
 
-test('world: 8 expedition regions + the open Grand Tour, 5 tracks each, unique ids, complete metadata', () => {
-  assert.equal(REGIONS.length, 9);
-  assert.equal(REGIONS.filter((r) => r.open).length, 1);
-  assert.equal(TRACKS.length, 45);
-  assert.equal(new Set(TRACK_META.map((t) => t.id)).size, 45);
-  for (const r of REGIONS) assert.equal(TRACK_META.filter((t) => t.region === r.id).length, 5, r.id);
+test('world: 8 expedition regions + the open Grand Tour, 5 tracks each, plus the asset-pack coast run; unique ids, complete metadata', () => {
+  assert.equal(REGIONS.length, 10);
+  assert.equal(REGIONS.filter((r) => r.open).length, 2);
+  assert.equal(TRACKS.length, 46);
+  assert.equal(new Set(TRACK_META.map((t) => t.id)).size, 46);
+  for (const r of REGIONS) assert.equal(TRACK_META.filter((t) => t.region === r.id).length, r.id === 'coast' ? 1 : 5, r.id);
   assert.ok(TRACK_META.reduce((s, t) => s + t.par.gold, 0) >= 6 * 3600, 'gold times must total at least 6 hours');
   for (const t of TRACK_META) { assert.ok(WEATHER[t.weather], t.id); for (const p of t.weatherPlan || []) assert.ok(WEATHER[p[1]], `${t.id} plan`); }
   for (const t of TRACK_META) {
@@ -71,7 +71,7 @@ test('every track compiles to valid, distinct geometry with checkpoints and a fi
       if (!onBridge) assert.ok(Math.abs(tr.heightAt(tr.PX[i], tr.PZ[i]) - tr.PY[i]) < 0.9, `${def.id}: road floats at s=${tr.S[i]}`);
     }
   }
-  assert.equal(sigs.size, 45, 'tracks must not share a layout');
+  assert.equal(sigs.size, 46, 'tracks must not share a layout');
 });
 
 test('terrain: heights are continuous and props never sit on the road', () => {

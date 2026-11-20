@@ -16,6 +16,7 @@ import { buildParams } from './core/specs.js';
 import { TIRES } from './core/surfaces.js';
 import { BotDriver } from './core/bot.js';
 import { HazardView } from './render/hazards.js';
+import { loadPack } from './render/pack.js';
 import { TIER_FOR_DIFFICULTY } from './core/obstacles.js';
 import { challengeRewards } from './core/progress.js';
 
@@ -88,7 +89,12 @@ export class DriveGame {
     this.flip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 
     // build the heavy stuff after the loading screen has painted
-    setTimeout(() => this._build(), 30);
+    // (a track drawn with the asset pack fetches its models first)
+    this.pack = null;
+    setTimeout(() => {
+      if (!opts.def.pack) { this._build(); return; }
+      loadPack((f) => this.hud.loading(`Loading ${opts.def.name}...`, 0.05 + 0.05 * f)).then((p) => { this.pack = p; }).catch((e) => console.warn('Asset pack not loaded:', e)).finally(() => this._build());
+    }, 30);
   }
 
   _build() {
@@ -101,8 +107,10 @@ export class DriveGame {
       : { difficulty: obTier, dynamicEvents: o.settings.dynamicHazards !== false, categories: { wildlife: o.settings.wildlife !== false } };
     this.session = new DriveSession(this.track, this.params, { difficulty: o.difficulty, resume: o.resume, obstacles });
     this.weather = this.session.weather;
-    this.world = new World(this.track, this.q, this.renderer);
-    if (!ENABLE_SKYBOX) {
+    this.world = new World(this.track, this.q, this.renderer, this.pack);
+    if (this.pack) {
+      this.world.setSkyboxEnabled(true);       // this track brings its own skies
+    } else if (!ENABLE_SKYBOX) {
       this.world.setSkyboxEnabled(false);
     } else if (o.settings && typeof o.settings.skybox === 'boolean') {
       this.world.setSkyboxEnabled(o.settings.skybox);
@@ -112,6 +120,7 @@ export class DriveGame {
     this.world.setAtmosphere(this.session.weather, this.session.hour, 1);
     this.atmoT = 0;
     this.car = new CarModel(o.vehicle, this.params, this.session.vehicle, { pbr: this.q.pbr });
+    if (this.pack && this.pack.jeep && o.vehicle.id === 'mountain-jeep') this.car.usePack(this.pack.jeep);
     this.world.scene.add(this.car.group);
     for (const m of this.car.mats) this.world.useHdrOn(m);     // paint, chrome and glass reflect the HDR sky
     // ghost of the player's best run on this track

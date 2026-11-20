@@ -101,6 +101,17 @@ export class TrackBuilder {
     return this;
   }
 
+  /**
+   * A model standing beside the road (asset-pack tracks). It is solid when r > 0.
+   * o: { ahead, side (1 left / -1 right), off (m from the road edge), rot (rad, relative to the road), scale,
+   *      r (collision radius), h (collision height), len (a long thin object such as a fence: runs along the road),
+   *      face: 'road' (turn it towards the carriageway) }
+   */
+  deco(model, o = {}) {
+    this.features.push({ type: 'deco', model, s: this.s + (o.ahead || 0), side: o.side ?? 1, off: o.off ?? 3, rot: o.rot || 0, scale: o.scale || 1, r: o.r || 0, h: o.h ?? 3, len: o.len || 0, face: o.face || '' });
+    return this;
+  }
+
   /** The next len m run under a rock roof (author the cutting with high L / R banks). */
   tunnel(len) { this.features.push({ type: 'tunnel', s0: this.s, s1: this.s + len }); return this; }
 
@@ -176,7 +187,7 @@ export class TrackBuilder {
   }
   /** Wooden bridge over a gorge for the next len m (author it straight). */
   bridge(len, o = {}) {
-    this.features.push({ type: 'bridge', s0: this.s, s1: this.s + len, width: o.width ?? 3.4, depth: o.depth ?? 14, rails: o.rails ?? false });
+    this.features.push({ type: 'bridge', s0: this.s, s1: this.s + len, width: o.width ?? 3.4, depth: o.depth ?? 14, rails: o.rails ?? false, model: o.model || '' });
     return this;
   }
   /** Alternative line beside the main road for the next len m. */
@@ -298,6 +309,7 @@ export class Track {
     this.junctions = [];
     this.tunnels = [];
     this.landmarks = [];
+    this.decos = [];
     const rng = mulberry(this.seed * 7919 + 13);
     const leftOf = (i) => {
       const a = Math.max(0, i - 1), c = Math.min(nMain - 1, i + 1);
@@ -337,7 +349,7 @@ export class Track {
         }
         this.bridges.push({
           x0: P.x[i0], z0: P.z[i0], y0, x1: P.x[i1], z1: P.z[i1], y1,
-          half: f.width / 2, len: Math.hypot(P.x[i1] - P.x[i0], P.z[i1] - P.z[i0]), s0: f.s0, s1: f.s1, rails: f.rails
+          half: f.width / 2, len: Math.hypot(P.x[i1] - P.x[i0], P.z[i1] - P.z[i0]), s0: f.s0, s1: f.s1, rails: f.rails, model: f.model || ''
         });
       }
     }
@@ -499,6 +511,11 @@ export class Track {
         this.checkpoints.push({ s: f.s, name: f.name });
       } else if (f.type === 'note') {
         this.notes.push({ s: f.s, text: f.text });
+      } else if (f.type === 'deco') {
+        const p = posAt(f.s, f.side), hd = Math.atan2(p.fr.tx, p.fr.tz);
+        // fences run along the road; lamps and the like turn to face it
+        const rot = hd + f.rot + (f.len ? -Math.PI / 2 : 0) + (f.face === 'road' && f.side > 0 ? Math.PI : 0);
+        this.decos.push({ model: f.model, s: f.s, x: p.x + p.fr.lx * f.side * f.off, z: p.z + p.fr.lz * f.side * f.off, rot, scale: f.scale, r: f.r, h: f.h, len: f.len });
       } else if (f.type === 'tunnel') {
         this.tunnels.push({ s0: f.s0, s1: f.s1, i0: idxS(f.s0), i1: idxS(f.s1) });
       } else if (f.type === 'landmark') {
@@ -1055,9 +1072,31 @@ export class Track {
       }
     }
     if (B) this._buildings(cx, cz, ch, props);
+    if (this.decos.length) this._decos(cx, cz, props);
     this._solidScenery(cx, cz, ch, props);
     ch.props = props;
     return props;
+  }
+
+  /** Placed models (TrackBuilder.deco) that stand in this chunk, with their colliders. */
+  _decos(cx, cz, props) {
+    if (!this._decoMap) {
+      this._decoMap = new Map();
+      for (const d of this.decos) {
+        const k = key2(Math.floor(d.x / CHUNK), Math.floor(d.z / CHUNK));
+        let a = this._decoMap.get(k);
+        if (!a) this._decoMap.set(k, (a = []));
+        a.push(d);
+      }
+    }
+    const list = this._decoMap.get(key2(cx, cz));
+    if (!list) return;
+    for (const d of list) {
+      const y = this.heightAt(d.x, d.z);
+      props.push({ type: 'deco', model: d.model, x: d.x, z: d.z, y, rot: d.rot, scale: d.scale, v: 0, r: d.len ? 0 : d.r, h: d.h });
+      // a long thin object collides along its whole length
+      if (d.len && d.r) for (const u of [-d.len / 3, 0, d.len / 3]) { const x = d.x + Math.cos(d.rot) * u, z = d.z - Math.sin(d.rot) * u; props.push({ type: 'solid', x, z, y: this.heightAt(x, z), scale: 1, rot: 0, v: 0, r: Math.max(d.r, d.len / 6), h: d.h }); }
+    }
   }
 
   /**
@@ -1091,7 +1130,7 @@ export class Track {
         }
         if (y1 - y0 > 2.4 || y0 < this.seaLevel + 0.8) continue;
         const clearOf = (list, r) => list.some((c) => Math.hypot(c.x - x, c.z - z) < half + r);
-        if (clearOf(this.relics, 7) || clearOf(this.caches, 9) || clearOf(this.anchors, 4) || clearOf(this.falls, 10)) continue;
+        if (clearOf(this.relics, 7) || clearOf(this.caches, 9) || clearOf(this.anchors, 4) || clearOf(this.falls, 10) || clearOf(this.decos, 4)) continue;
         const k = Math.pow(fbm(x / 150, z / 150, seed + 906, 2) * 0.5 + 0.5, 1.7) * (0.55 + 0.45 * rand2(wx, wz, seed + 907));
         const h = U.h[0] + (U.h[1] - U.h[0]) * Math.min(1, k * 1.5);
         props.push({ type: 'building', kind: U.kind, x, z, y: y0 - 0.4, w, d, h, rot, v: rand2(wx, wz, seed + 908), r: 0, scale: 1, b: bi });

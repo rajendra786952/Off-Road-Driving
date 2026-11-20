@@ -75,12 +75,17 @@ const POOL = {
   desert:  { softPatch: 4, rockGarden: 2, boulderSlalom: 2, stoneSteps: 1, wreck: 2, roadworks: 1, rockfall: 1, rollingBoulder: 1, herd: 1, squall: 2, gust: 1 },
   jungle:  { mudPit: 3, fallenTree: 3, logSteps: 2, potholes: 2, rockGarden: 1, herd: 3, treefall: 2, squall: 1 },
   volcano: { rockGarden: 3, boulderSlalom: 2, stoneSteps: 2, softPatch: 2, rockfall: 3, rollingBoulder: 2, wreck: 1, gust: 1 },
-  city:    { roadworks: 4, wreck: 2, potholes: 3 }      // open world: streets and docks
+  city:    { roadworks: 4, wreck: 2, potholes: 3 },     // streets and docks
+  // Brava Coast Run (tracks/coast.js): coast road, jungle and mountain areas
+  coastB:  { potholes: 3, wreck: 2, roadworks: 2 },
+  coastJ:  { logSteps: 2, fallenTree: 3, mudPit: 2, potholes: 2, herd: 4, treefall: 2, rockGarden: 1 },
+  coastM:  { rockGarden: 3, boulderSlalom: 3, stoneSteps: 2, rockfall: 3, herd: 3 }
 };
 const SOFT = { desert: ['deepsand', 'Sand trap'], snow: ['ice', 'Sheet ice'], rocky: ['scree', 'Loose scree'], ridge: ['scree', 'Loose scree'], volcano: ['ash', 'Ash drift'] };
 const HERDS = {
   forest: ['deer', 'boar'], mud: ['cow', 'horse', 'goat'], rocky: ['goat'], ridge: ['goat'], snow: ['deer'],
-  desert: ['goat', 'horse'], jungle: ['elephant', 'monkey', 'boar'], volcano: []
+  desert: ['goat', 'horse'], jungle: ['elephant', 'monkey', 'boar'], volcano: [],
+  coastJ: ['deer', 'cow', 'elephant'], coastM: ['goat']      // the four animals in the asset pack
 };
 const HERD_SIZE = { deer: [2, 4], boar: [2, 3], cow: [2, 4], goat: [3, 5], horse: [2, 3], elephant: [1, 2], monkey: [3, 5] };
 const SQUALL = { desert: 'sandstorm', snow: 'blizzard', jungle: 'heavyrain', forest: 'heavyrain', mud: 'heavyrain' };
@@ -158,6 +163,7 @@ export function generateObstacles(track, config) {
   for (const j of track.junctions || []) mark(j - 22, j + 22);
   for (const tn of track.tunnels || []) mark(tn.s0 - 20, tn.s1 + 20);
   for (const l of track.landmarks || []) if (l.kind === 'fuel') mark(l.s - 24, l.s + 24);
+  for (const d of track.decos || []) if (d.r > 0 && !d.len) mark(d.s - 10, d.s + 10);
   for (const o of track.obstacles) {
     if (o.gen) continue;
     const i = track.locateMain(o.x, o.z, 0);
@@ -450,7 +456,7 @@ export function generateObstacles(track, config) {
   if (cfg.categories.bridges && tier >= 2 && !masonry) {
     for (let bi = 0; bi < track.bridges.length; bi++) {
       const b = track.bridges[bi];
-      if (b.len < 14 || b.half < 1.6) continue;
+      if (b.len < 14 || b.half < 1.6 || b.model) continue;      // a bridge drawn from a model has no loose planks
       const n = Math.min(3, 1 + (tier >= 3 ? 1 : 0) + (b.len > 26 ? 1 : 0));
       let side = rng() < 0.5 ? 1 : -1;
       for (let k = 0; k < n; k++) {

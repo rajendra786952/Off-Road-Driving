@@ -346,6 +346,34 @@ export class CarModel {
     this._dirtShown = -1;
   }
 
+  /**
+   * Swap the built-in body and wheels for the asset pack's jeep (render/pack.js). The model is
+   * stretched so its wheels sit exactly where the physics has them.
+   */
+  usePack(jeep) {
+    if (!jeep || !jeep.body || !jeep.wheel) return;
+    const P = this.P, v = this.veh;
+    const sx = (P.track / 2) / jeep.halfTrack, sz = (P.wheelbase / 2) / jeep.halfBase, sy = P.wheelR / jeep.radius;
+    for (const c of this.body.children) c.visible = false;
+    const body = new THREE.Mesh(jeep.body.clone(), this.paintM);
+    this.geos.push(body.geometry);
+    // wheel centres at rest are (comH - wheelR) below the centre of mass
+    body.scale.set(sx, sy, sz);
+    body.position.set(0, -(P.comH - P.wheelR) - (v.sag || 0) - jeep.axleY * sy, -jeep.midZ * sz);
+    body.castShadow = true;
+    this.body.add(body);
+    const wg = jeep.wheel.clone();
+    this.geos.push(wg);
+    this.wheels.forEach((g, i) => {
+      for (const c of g.children) c.visible = false;
+      const m = new THREE.Mesh(wg, this.trimM);
+      // the model's wheel is the left front: mirror it for the other side
+      m.scale.set((v.wheels[i].lx < 0 ? -1 : 1) * sx, sy, sy);
+      m.castShadow = true;
+      g.add(m);
+    });
+  }
+
   setInterior(on) {
     this.body.visible = !on;
     this.cockpit.visible = on;

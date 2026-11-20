@@ -10,6 +10,8 @@ import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { Sky, sunElevation, ENABLE_SKYBOX } from './sky.js';
 import { Scenery } from './scenery.js';
 import { treeAtlas, treeGeometries } from './trees.js';
+import { PACK_BUILDINGS, PACK_TREES, PACK_GROUND } from './pack.js';
+import { PACK_DIR } from '../tracks/coast.js';
 
 const key2 = (a, b) => (a + 32768) * 65536 + (b + 32768);
 
@@ -213,7 +215,9 @@ function rockPatch(mat, ground) {
 }
 
 export class World {
-  constructor(track, quality, renderer) {
+  /** pack: the loaded asset pack (render/pack.js) for tracks that are drawn with it, else null. */
+  constructor(track, quality, renderer, pack) {
+    this.pack = pack || null;
     this.track = track;
     this.q = quality;
     this.renderer = renderer;
@@ -326,7 +330,7 @@ export class World {
     if (this.track.biomes) this._buildWorldExtras();
     this._buildPrecip();
     this.scenery = new Scenery(this.track, this.q, scene);
-    if (pbr && env.hdr && this.skyboxEnabled) this._loadHdr(env.hdr);
+    if (pbr && env.hdr && this.skyboxEnabled) { this._loadHdr(env.hdr); if (env.hdrAlt) this._loadHdr(env.hdrAlt, true); }
     if (pbr) this._loadGround(aniso);
     this.setAtmosphere(session.weather, session.hour, 0);
   }
@@ -337,8 +341,12 @@ export class World {
    */
   _loadGround(aniso) {
     const S = this.q.name === 'medium' ? 512 : 1024, SN = S / 2, N = GROUND_LAYERS.length;
-    const load = (name) => new Promise((res, rej) => new THREE.ImageLoader().load('./textures/ground/' + name + '.jpg', res, undefined, rej));
-    Promise.all(GROUND_LAYERS.flatMap((n) => [load(n + '_diff'), load(n + '_nor')])).then((imgs) => {
+    const load = (file) => new Promise((res, rej) => new THREE.ImageLoader().load(file, res, undefined, rej));
+    // layer -> files. The pack has seven ground textures: its asphalt takes the snow slot and its grass doubles as forest floor.
+    const files = this.pack
+      ? GROUND_LAYERS.map((n) => { const p = n === 'snow' ? 'asphalt' : n === 'forest' ? 'grass' : PACK_GROUND.includes(n) ? n : 'dirt'; return [PACK_DIR + 'textures/ground/' + p + '_color.jpg', PACK_DIR + 'textures/ground/' + p + '_normal.png']; })
+      : GROUND_LAYERS.map((n) => ['./textures/ground/' + n + '_diff.jpg', './textures/ground/' + n + '_nor.jpg']);
+    Promise.all(files.flatMap(([c, nm]) => [load(c), load(nm)])).then((imgs) => {
       if (this.disposed) return;
       const cv = document.createElement('canvas');
       const g = cv.getContext('2d', { willReadFrequently: true });
@@ -377,8 +385,9 @@ export class World {
    * Photographic sky + image-based lighting. Loads in the background (the track starts on the
    * procedural sky and the photo fades in), so it never delays the start of a run.
    */
-  _loadHdr(file) {
-    new RGBELoader().load('./environments/' + file, (tex) => {
+  /** alt = true loads the second (sunset) sky, which only replaces the picture in the sky dome. */
+  _loadHdr(file, alt) {
+    new RGBELoader().load(file.includes('/') ? file : './environments/' + file, (tex) => {
       if (this.disposed) { tex.dispose(); return; }
       tex.mapping = THREE.EquirectangularReflectionMapping;
       tex.wrapS = THREE.RepeatWrapping;
@@ -396,6 +405,8 @@ export class World {
         }
       }
       const rot = bu - (this.sunAz / (Math.PI * 2) + 0.5);
+      if (alt) { this.hdrAltTex = tex; this.hdrAltRot = rot; return; }
+      this.hdrRotF = rot;
       this.hdrTex = tex;
       if (this.env.hdrSky !== false && this.skyboxEnabled) this.sky.setHdr(tex, rot);
       // lighting and reflections from the same photo
@@ -478,7 +489,12 @@ export class World {
     this.hemi.intensity = env.ambient * (0.18 + 0.95 * day) * (1 + gloom * 0.25);
     this.scene.environmentIntensity = (0.12 + 0.7 * day) * (1 - gloom * 0.3);
     this._sunI = this.sun.intensity; this._hemiI = this.hemi.intensity; this._envI = this.scene.environmentIntensity;
-    if (this.bldMat) this.bldMat.emissiveIntensity = clamp((1 - day) * 1.3 + gloom * 0.25, 0, 1.1);
+    if (this.bldMat && this.bldMat.emissiveMap) this.bldMat.emissiveIntensity = clamp((1 - day) * 1.3 + gloom * 0.25, 0, 1.1);
+    // the pack's sunset sky takes over from its day sky as the sun gets low
+    if (this.hdrAltTex && this.hdrTex && this.skyboxEnabled) {
+      const alt = low > 0.4;
+      if (alt !== !!this._altSky) { this._altSky = alt; this.sky.setHdr(alt ? this.hdrAltTex : this.hdrTex, alt ? this.hdrAltRot : this.hdrRotF); }
+    }
     if (this.oceanMat) this.oceanMat.color.copy(this.oceanCol).multiplyScalar(0.18 + 0.82 * day).lerp(c.hor, 0.18);
     this._hdrLevel();
 
@@ -621,6 +637,21 @@ export class World {
         { geo: new THREE.IcosahedronGeometry(0.38, 0), matrix: M(-0.36, 0.3, -0.22, 1, 0.75, 1, 0, 1.9, 0.3), color: [f2[0] * 0.9, f2[1] * 0.9, f2[2] * 0.9], shade: [0, 0.65] },
         { geo: new THREE.IcosahedronGeometry(0.3, 0), matrix: M(0.05, 0.72, -0.1, 1, 0.8, 1, 0.8, 0.3, 0), color: f2, shade: [0.5, 1.0] }
       ]);
+    if (this.pack) {
+      const P = this.pack, own = (g) => g.clone();          // the pack is cached between drives: the world owns copies
+      for (const [name, [model, k]] of Object.entries(PACK_TREES)) {
+        if (!P.geo[model]) continue;
+        const g = own(P.geo[model]); g.scale(k, k, k);
+        this.inst[name] = mk(g, Math.ceil(cap / 3) + 100);
+        this.inst[name].castShadow = !!this.q.shadows;
+      }
+      P.rocks.forEach((g, i) => { this.inst['pk_rock' + i] = mk(own(g), Math.ceil(cap / 6) + 40, false, this.rockMat); });
+      for (const list of Object.values(PACK_BUILDINGS)) for (const name of list) if (P.geo[name]) { this.inst['pk_' + name] = mk(own(P.geo[name]), 160); this.inst['pk_' + name].castShadow = !!this.q.shadows; }
+      const n = {};
+      for (const d of this.track.decos) n[d.model] = (n[d.model] || 0) + 1;
+      for (const model in n) if (P.geo[model]) { this.inst['pk_' + model] = mk(own(P.geo[model]), n[model] + 2); this.inst['pk_' + model].castShadow = !!this.q.shadows; }
+      if (P.rocks[0]) this.rockGeo = this.keep(own(P.rocks[0]));       // obstacle rocks use the pack's boulder too
+    }
     if (tex && tex.bush) {
       bushGeo.dispose();
       this.inst.bush = mk(tex.bush, cap, false, this.leafMat);
@@ -716,7 +747,8 @@ export class World {
             } else {
               put('far', p, 0.9 + p.v * 0.4, col);
             }
-          } else if (p.type === 'boulder') put('boulder', { ...p, y: p.y + p.scale * 0.25 }, 0.75);
+          } else if (p.type === 'boulder') put(this.inst.pk_rock0 ? 'pk_rock' + (Math.floor(p.v * 97) % this.pack.rocks.length) : 'boulder', { ...p, y: p.y + p.scale * 0.25 }, 0.75);
+          else if (p.type === 'deco') this._putDeco(p, counts);
           else if (p.type === 'bush' && (near || p.v > 0.5)) put('bush', p);
           else if (p.type === 'building') this._putBuilding(p, counts);
         }
@@ -732,8 +764,8 @@ export class World {
           if (!ch) continue;
           // only where a town is: the chunk's own biome sample says so without building its props
           const mid = 17 * CW + 17;
-          if (!B[ch.bio[mid]].urban && !B[ch.bio2[mid]].urban) continue;
-          for (const p of this.track.propsFor(cx, cz)) if (p.type === 'building') this._putBuilding(p, counts);
+          if (!this.pack && !B[ch.bio[mid]].urban && !B[ch.bio2[mid]].urban) continue;
+          for (const p of this.track.propsFor(cx, cz)) { if (p.type === 'building') this._putBuilding(p, counts); else if (p.type === 'deco') this._putDeco(p, counts); }
         }
       }
     }
@@ -749,8 +781,32 @@ export class World {
     }
   }
 
+  /** A placed pack model (lamp, fence, lighthouse, crane, animal...). */
+  _putDeco(p, counts) {
+    const name = 'pk_' + p.model, im = this.inst[name];
+    if (!im) return;
+    const i = counts[name];
+    if (i >= im.instanceMatrix.count) return;
+    this.tmpQ.setFromAxisAngle(this.up, p.rot);
+    im.setMatrixAt(i, this.tmpM.compose(this.tmpV.set(p.x, p.y - 0.06, p.z), this.tmpQ, this.tmpS.set(p.scale, p.scale, p.scale)));
+    counts[name] = i + 1;
+  }
+
   /** One building: a box with the facade texture (scaled per instance in the shader), plus a roof for houses. */
   _putBuilding(p, counts) {
+    if (this.pack && !(p.kind === 'tower' && p.v > 0.62)) {
+      // one of the pack's building models, stretched to the plot (a third of the towers stay facade-textured blocks)
+      const list = PACK_BUILDINGS[p.kind], model = list[Math.floor(p.v * 7.3) % list.length];
+      const name = 'pk_' + model, pm = this.inst[name], size = this.pack.size[model];
+      if (pm && size) {
+        const k = counts[name];
+        if (k >= pm.instanceMatrix.count) return;
+        this.tmpQ.setFromAxisAngle(this.up, p.rot);
+        pm.setMatrixAt(k, this.tmpM.compose(this.tmpV.set(p.x, p.y, p.z), this.tmpQ, this.tmpS.set(p.w / size[0], p.h / size[1], p.d / size[2])));
+        counts[name] = k + 1;
+        return;
+      }
+    }
     const im = this.inst.bld, i = counts.bld;
     if (i >= im.instanceMatrix.count) return;
     this.tmpQ.setFromAxisAngle(this.up, p.rot);
@@ -776,18 +832,21 @@ export class World {
   _buildWorldExtras() {
     const tr = this.track, scene = this.scene, env = this.env;
     // ---- buildings
-    const tex = facadeTextures();
-    this.keep(tex.map); this.keep(tex.lit);
+    const packFacade = this.pack && this.pack.tex.facade;
+    const tex = packFacade ? { map: packFacade, lit: null } : facadeTextures();
+    if (!packFacade) { this.keep(tex.map); this.keep(tex.lit); }
+    const tile = packFacade ? '30.0' : '13.6';             // metres of wall one copy of the texture covers
+    const glow = tex.lit ? { emissiveMap: tex.lit, emissive: 0xffffff, emissiveIntensity: 0 } : {};
     this.bldMat = this.keep(this.q.pbr
-      ? new THREE.MeshStandardMaterial({ map: tex.map, emissiveMap: tex.lit, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.72, metalness: 0.08, envMapIntensity: 0.5 })
-      : new THREE.MeshLambertMaterial({ map: tex.map, emissiveMap: tex.lit, emissive: 0xffffff, emissiveIntensity: 0 }));
+      ? new THREE.MeshStandardMaterial({ map: tex.map, ...glow, roughness: 0.72, metalness: 0.08, envMapIntensity: 0.5 })
+      : new THREE.MeshLambertMaterial({ map: tex.map, ...glow }));
     this.bldMat.onBeforeCompile = (sh) => {
       // repeat the facade by the instance's real size (one tile = 13.6 m); roofs get the plain wall texel
       sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', [
         '#include <uv_vertex>',
         '#ifdef USE_INSTANCING',
         '  vec3 isc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));',
-        '  vec2 fsc = abs(normal.y) > 0.5 ? vec2(0.0) : vec2((abs(normal.x) > 0.5 ? isc.z : isc.x) / 13.6, isc.y / 13.6);',
+        '  vec2 fsc = abs(normal.y) > 0.5 ? vec2(0.0) : vec2((abs(normal.x) > 0.5 ? isc.z : isc.x) / ' + tile + ', isc.y / ' + tile + ');',
         '  #ifdef USE_MAP',
         '    vMapUv = uv * fsc;',
         '  #endif',
@@ -810,12 +869,15 @@ export class World {
 
     // ---- the sea: one big sheet that follows the camera (only on tracks that have a coast)
     if (tr.seaLevel !== undefined) {
-    this.oceanCol = new THREE.Color(0.05, 0.34, 0.4);
-    this.oceanNormal = this.keep(normalTexture(128, 5, 1.6, 33));
+    const pw = this.pack ? this.pack.tex : {};
+    this.oceanCol = pw.waterColor ? new THREE.Color(0.62, 0.9, 0.95) : new THREE.Color(0.05, 0.34, 0.4);
+    this.oceanNormal = this.keep(pw.waterNormal ? pw.waterNormal.clone() : normalTexture(128, 5, 1.6, 33));
     this.oceanNormal.repeat.set(220, 220);
+    const oceanMap = pw.waterColor ? this.keep(pw.waterColor.clone()) : null;
+    if (oceanMap) oceanMap.repeat.set(90, 90);
     this.oceanMat = this.keep(this.q.pbr
-      ? new THREE.MeshStandardMaterial({ color: this.oceanCol.clone(), roughness: 0.08, metalness: 0.3, transparent: true, opacity: 0.84, depthWrite: false, normalMap: this.oceanNormal, normalScale: new THREE.Vector2(0.5, 0.5), envMapIntensity: 2.0 })
-      : new THREE.MeshLambertMaterial({ color: this.oceanCol.clone(), transparent: true, opacity: 0.8, depthWrite: false }));
+      ? new THREE.MeshStandardMaterial({ color: this.oceanCol.clone(), map: oceanMap, roughness: 0.08, metalness: 0.3, transparent: true, opacity: 0.84, depthWrite: false, normalMap: this.oceanNormal, normalScale: new THREE.Vector2(0.5, 0.5), envMapIntensity: 2.0 })
+      : new THREE.MeshLambertMaterial({ color: this.oceanCol.clone(), map: oceanMap, transparent: true, opacity: 0.8, depthWrite: false }));
     this.useHdrOn(this.oceanMat);
     this.ocean = new THREE.Mesh(this.keep(new THREE.PlaneGeometry(2600, 2600)), this.oceanMat);
     this.ocean.rotation.x = -Math.PI / 2;
@@ -837,6 +899,17 @@ export class World {
         if ((i - t.i0) % 6 === 0) for (const sd of [-1, 1]) {
           parts.push({ geo: new THREE.BoxGeometry(1.1, 6.4, 1.2), matrix: M(tr.PX[i] + tr.TZ[i] * sd * (hw + 1.3), tr.PY[i] + 2.9, tr.PZ[i] - tr.TX[i] * sd * (hw + 1.3), 1, 1, 1, 0, yawAt(i), sd * 0.16), color: rockB });
         }
+      }
+    }
+    if (this.pack && this.pack.geo.tunnel_portal) {
+      for (const t of tr.tunnels) for (const i of [t.i0, t.i1]) {
+        const k = (2 * tr.HW[i] + 1.6) / 3.2;                // the portal's opening is 3.2 m wide in the model
+        const m = new THREE.Mesh(this.keep(this.pack.geo.tunnel_portal.clone()), this.propMat);
+        m.position.set(tr.PX[i], tr.PY[i] - 0.1, tr.PZ[i]);
+        m.rotation.y = yawAt(i);
+        m.scale.set(k, k * 1.05, 2.2);
+        m.castShadow = !!this.q.shadows;
+        scene.add(m);
       }
     }
     // ---- lane markings on the asphalt (the road profile is exact there, so no terrain lookups are needed)
@@ -949,7 +1022,16 @@ export class World {
         }
         continue;
       }
-      const nPl = Math.round(b.len / 0.6);
+      const packBridge = this.pack && b.model && this.pack.geo[b.model];
+      if (packBridge) {
+        // the model's deck top is 1.2 m above its origin; stretch it to the span and the deck width
+        const size = this.pack.size[b.model];
+        const m = new THREE.Mesh(this.keep(packBridge.clone()), this.propMat);
+        m.applyMatrix4(local(M(0, -1.2, 0, (b.half * 2) / size[0], 1, b.len / size[2])));
+        m.castShadow = !!this.q.shadows; m.receiveShadow = true;
+        scene.add(m);
+      }
+      const nPl = packBridge ? 0 : Math.round(b.len / 0.6);
       for (let i = 0; i < nPl; i++) {
         const z = -b.len / 2 + (i + 0.5) * (b.len / nPl);
         // missing planks (generated obstacle layer): only the part of the plank that is still there
@@ -966,7 +1048,7 @@ export class World {
         const z = -b.len / 2 + ((g.t0 + g.t1) / 2) * b.len;
         parts.push({ geo: new THREE.BoxGeometry((b.half - g.d0) * 0.8, 0.12, 0.5), matrix: local(M(g.side * (b.half + g.d0) / 2, -0.42, z, 1, 1, 1, 0, 0, g.side * 0.75)), color: cB });
       }
-      for (const sx of [-1, 1]) {
+      for (const sx of packBridge ? [] : [-1, 1]) {
         parts.push({ geo: new THREE.BoxGeometry(0.22, 0.34, b.len + 1), matrix: local(M(sx * (b.half - 0.2), -0.3, 0)), color: cB });
         if (b.rails) parts.push({ geo: new THREE.BoxGeometry(0.1, 0.1, b.len), matrix: local(M(sx * (b.half + 0.05), 0.7, 0)), color: cB });
       }
@@ -977,7 +1059,7 @@ export class World {
         const drop = (b.y0 + (b.y1 - b.y0) * u) - tr.heightAt(wx, wz) + 1;
         if (drop < 1.5) continue;
         for (const sx of [-1, 1]) parts.push({ geo: new THREE.BoxGeometry(0.28, drop, 0.28), matrix: local(M(sx * (b.half - 0.2), -0.3 - drop / 2, z)), color: cB });
-        if (b.rails) for (const sx of [-1, 1]) parts.push({ geo: new THREE.BoxGeometry(0.1, 0.8, 0.1), matrix: local(M(sx * (b.half + 0.05), 0.35, z)), color: cB });
+        if (b.rails && !packBridge) for (const sx of [-1, 1]) parts.push({ geo: new THREE.BoxGeometry(0.1, 0.8, 0.1), matrix: local(M(sx * (b.half + 0.05), 0.35, z)), color: cB });
       }
     }
     for (const a of tr.anchors) {
@@ -1036,7 +1118,7 @@ export class World {
       return m;
     });
     // water
-    this.waterNormal = this.keep(normalTexture(128, 5, 1.6, 21));
+    this.waterNormal = this.keep(this.pack && this.pack.tex.waterNormal ? this.pack.tex.waterNormal.clone() : normalTexture(128, 5, 1.6, 21));
     this.waterNormal.repeat.set(18, 4);
     const wcol = new THREE.Color(0.16, 0.32, 0.36);
     if (env.silhouette === 'canopy') wcol.setRGB(0.2, 0.3, 0.2);
@@ -1165,7 +1247,7 @@ export class World {
           const t = sq.onRoad && e > 0 ? 1 : smoothstep(1.6, -0.2, e);
           r += (c[0] - r) * t; g += (c[1] - g) * t; b += (c[2] - b) * t;
           for (let m = 0; m < 8; m++) lw[m] *= 1 - t;
-          lw[LAYER_OF[sq.surface.name] ?? 1] += t;                 // the road's own surface
+          lw[this.pack && sq.surface.name === 'asphalt' ? 6 : LAYER_OF[sq.surface.name] ?? 1] += t;   // the road's own surface
           if (sq.waterY > y) { r *= 0.72; g *= 0.74; b *= 0.78; }
           if (sq.surface.hot) glow = 1;
         } else if (extra && e < 70) {
@@ -1325,6 +1407,7 @@ export class World {
   dispose() {
     this.disposed = true;
     if (this.hdrTex) this.hdrTex.dispose();
+    if (this.hdrAltTex) this.hdrAltTex.dispose();
     if (this.hdrRT) this.hdrRT.dispose();
     if (this.groundTex) this.groundTex.forEach((t) => t.dispose());
     for (const [, m] of this.chunkMeshes) m.mesh.geometry.dispose();

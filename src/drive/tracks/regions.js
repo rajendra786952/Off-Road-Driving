@@ -9,5 +9,6 @@ export const REGIONS = [
   { id: 'jungle', n: 7, name: 'Jungle Expedition', level: 'Expert', color: '#2bb673', desc: 'Tropical jungle: waterfalls, flooded rivers, red mud and trails one truck wide.' },
   { id: 'volcano', n: 8, name: 'Volcanic Wasteland', level: 'Extreme', color: '#ff5a2c', desc: 'Ash plains, razor rock and lava fields on the climb to a live crater.' },
   // open: true = playable from the first launch, outside the expedition unlock chain
-  { id: 'tour', n: 9, name: 'Grand Tour', level: 'Open', color: '#b98cf0', open: true, desc: 'Five stand-alone tracks, one per landscape: forest, desert, mountain, swamp and snow. Open from the start.' }
+  { id: 'tour', n: 9, name: 'Grand Tour', level: 'Open', color: '#b98cf0', open: true, desc: 'Five stand-alone tracks, one per landscape: forest, desert, mountain, swamp and snow. Open from the start.' },
+  { id: 'coast', n: 10, name: 'Brava Coast', level: 'Open', color: '#35c2c9', open: true, desc: 'One long run built from the asset pack: harbour town, coast road, docks, jungle, mountain tunnel and two bridges.' }
 ];

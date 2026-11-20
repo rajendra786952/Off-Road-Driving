@@ -9,6 +9,7 @@ import { DESERT_TRACKS } from './desert.js';
 import { JUNGLE_TRACKS } from './jungle.js';
 import { VOLCANO_TRACKS } from './volcano.js';
 import { TOUR_TRACKS } from './tour.js';
+import { bravaCoast } from './coast.js';
 import { TRACK_META } from './meta.js';
 import './journey.js';      // every track passes through areas (town, farmland, coast...) - see journey.js
 
@@ -21,7 +22,8 @@ const BUILDERS = [
   ridgeEntry, cliffBridge, deadlyPass, narrowRoad, finalRidge,
   snowEntry, frozenRiver, blizzardMountain, iceValley, extremeSummit,
   ...DESERT_TRACKS, ...JUNGLE_TRACKS, ...VOLCANO_TRACKS,
-  ...TOUR_TRACKS
+  ...TOUR_TRACKS,
+  bravaCoast
 ];
 
 // The setup the headless test driver uses per region (= the "recommended" setup:
@@ -36,6 +38,7 @@ const REGION_SETUP = {
   desert: { vehicle: J, ups: { engine: 4, tires: 4, suspension: 4, clearance: 3, brakes: 4, fuel: 3 }, gear: { tire: 'mud', winch: true, difflock: true } },
   jungle: { vehicle: J, ups: { engine: 4, tires: 4, suspension: 4, clearance: 4, brakes: 4, fuel: 3 }, gear: { tire: 'mud', winch: true, difflock: true } },
   tour: { vehicle: J, ups: {}, gear: {} },   // open from the start: proven in a stock jeep
+  coast: { vehicle: J, ups: {}, gear: {} },  // open from the start too
   volcano: { vehicle: J, ups: { engine: 5, tires: 5, suspension: 5, clearance: 4, brakes: 5, fuel: 4 }, gear: { tire: 'rock', winch: true, difflock: true } }
 };
 const TRACK_SETUP = {

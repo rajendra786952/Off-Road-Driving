@@ -6,19 +6,24 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "environment": "development"
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
-      }
+      },
+      "environment": "preview"
     },
     "production": {
       "autoIncrement": true,
       "android": {
-        "buildType": "app-bundle"
-      }
+        "buildType": "app-bundle",
+        "gradleCommand": ":app:assembleRelease :app:bundleRelease",
+        "applicationArchivePath": "android/app/build/outputs/bundle/release/app-release.aab"
+      },
+      "environment": "production"
     }
   },
   "submit": {

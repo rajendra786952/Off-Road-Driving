@@ -65,10 +65,16 @@ const BUILD_ARCHS = process.env.ANDROID_ALL_ARCHS === '1' ? ['armeabi-v7a', 'arm
 // Cloud builds were dying with "Gradle build daemon disappeared unexpectedly":
 // the build process ran out of memory. Gradle gets a bigger heap than the 2 GB
 // default, and fewer things are compiled at the same time.
+//
+// One worker, not two: the store build (bundleRelease) compiles the Kotlin and
+// dexes the app *before* the C++ libraries, so Gradle is already holding its
+// full heap when two C++ builds (Skia and Reanimated) start side by side. On the
+// 16 GB build machine that froze both production builds at the same step until
+// Expo cancelled them at its 45-minute limit. One at a time is slower but fits.
 const BUILD_MEMORY = {
   'org.gradle.jvmargs': '-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError',
   'kotlin.daemon.jvmargs': '-Xmx2048m',
-  'org.gradle.workers.max': '2',
+  'org.gradle.workers.max': '1',
 };
 
 function withBuildMemory(config) {

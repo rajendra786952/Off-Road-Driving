@@ -12,6 +12,7 @@ import type { Feature } from '../core/features';
 import { PENDULUM_TOP, type Chunk, type GameEvent, type GameWorld, type Prop } from '../core/world';
 import type { DecorType, Theme } from '../data/themes';
 
+/** One slot of the particle pool. The slots are created once and reused for the whole run. */
 interface Particle {
   x: number;
   y: number;
@@ -44,7 +45,18 @@ export class SceneRenderer {
   private skyH = 0;
   /** Artwork recorded once and then only placed: see stamp(). */
   private stamps = new Map<string, SkPicture>();
+  /** Fixed pool: slots [0, liveParticles) are in use. Nothing is allocated or freed while driving. */
   private particles: Particle[] = [];
+  private liveParticles = 0;
+  private recycle = 0;
+  private propPics = new WeakMap<Prop, SkPicture>();
+  // paints used every frame, looked up once
+  private readonly strutPaint = stroke('#2b3238', 5);
+  private readonly cloudPaint = fill('#ffffff', 0.88);
+  private readonly ropePaint = stroke('#16181c', 4);
+  private readonly shadowNear = fill('#000000', 0.2);
+  private readonly shadowFar = fill('#000000', 0.1);
+  private readonly liquidPaints = new Map<number, { fill: SkPaint; edge: SkPaint; level: number }>();
   private clouds: { x: number; y: number; s: number; drift: number }[] = [];
   private shake = 0;
   private camX = 0;
@@ -59,6 +71,8 @@ export class SceneRenderer {
     this.far = backdropPath(this.th.backdrop, 0);
     this.near = backdropPath(this.th.backdrop, 1);
     if (this.th.backdrop === 'skyline') this.windows = [skylineWindows(0), skylineWindows(1)];
+    const blank = fill('#ffffff');
+    for (let i = 0; i < MAX_PARTICLES; i++) this.particles.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 0, grav: 0, paint: blank });
     for (let i = 0; i < 6; i++) {
       this.clouds.push({ x: hashFloat(77, i) * 1600 - 200, y: 30 + hashFloat(78, i) * 150, s: 0.6 + hashFloat(79, i) * 0.7, drift: 4 + hashFloat(80, i) * 10 });
     }
@@ -103,10 +117,23 @@ export class SceneRenderer {
   private emit(x: number, y: number, n: number, o: { color: string; speed: number; life: number; size: number; grav: number; back?: boolean; up?: boolean }): void {
     const paint = fill(o.color);
     for (let i = 0; i < n; i++) {
-      if (this.particles.length >= MAX_PARTICLES) this.particles.shift();
+      // a free slot, or (pool full) one of the slots in use, taken in turn
+      let p: Particle;
+      if (this.liveParticles < MAX_PARTICLES) p = this.particles[this.liveParticles++];
+      else {
+        p = this.particles[this.recycle];
+        this.recycle = (this.recycle + 1) % MAX_PARTICLES;
+      }
       const a = o.back ? Math.PI + 0.2 + Math.random() * 1.1 : o.up ? -Math.PI * (0.2 + Math.random() * 0.6) : Math.random() * Math.PI * 2;
       const sp = o.speed * (0.4 + Math.random() * 0.8);
-      this.particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (o.back ? 0 : 0.6), life: o.life, max: o.life, size: o.size, grav: o.grav, paint });
+      p.x = x;
+      p.y = y;
+      p.vx = Math.cos(a) * sp;
+      p.vy = Math.sin(a) * sp - (o.back ? 0 : 0.6);
+      p.life = p.max = o.life;
+      p.size = o.size;
+      p.grav = o.grav;
+      p.paint = paint;
     }
   }
 
@@ -129,11 +156,14 @@ export class SceneRenderer {
     this.snap = false;
 
     const f = dtMs / 16.667;
-    for (let i = this.particles.length - 1; i >= 0; i--) {
+    for (let i = this.liveParticles - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.life -= dtMs;
       if (p.life <= 0) {
-        this.particles.splice(i, 1);
+        // hand the slot back: swap it with the last one in use
+        const last = --this.liveParticles;
+        this.particles[i] = this.particles[last];
+        this.particles[last] = p;
         continue;
       }
       p.vy += p.grav * f;
@@ -268,17 +298,21 @@ export class SceneRenderer {
     this.drawPickups(c, left, right, timeMs);
     this.drawVehicle(c);
 
-    for (const p of this.particles) {
-      const a = p.life / p.max;
-      c.drawCircle(p.x, p.y, p.size * (0.4 + 0.6 * a), p.paint);
+    for (let i = 0; i < this.liveParticles; i++) {
+      const p = this.particles[i];
+      c.drawCircle(p.x, p.y, p.size * (0.4 + 0.6 * (p.life / p.max)), p.paint);
     }
 
     for (const f of w.features) {
       if ((f.type !== 'mud' && f.type !== 'water') || f.b < left || f.a > right) continue;
-      const level = w.surfaceY(f.a - 10) + 6;
-      const col = f.type === 'mud' ? th.mud : th.water;
-      c.drawPath(this.liquidPath(f), fill(col, f.type === 'mud' ? 0.9 : 0.62));
-      c.drawLine(f.a - 4, level, f.b + 4, level, stroke(shade(col, 0.35), 3, 0.8));
+      let lp = this.liquidPaints.get(f.id);
+      if (!lp) {
+        const col = f.type === 'mud' ? th.mud : th.water;
+        lp = { fill: fill(col, f.type === 'mud' ? 0.9 : 0.62), edge: stroke(shade(col, 0.35), 3, 0.8), level: w.surfaceY(f.a - 10) + 6 };
+        this.liquidPaints.set(f.id, lp);
+      }
+      c.drawPath(this.liquidPath(f), lp.fill);
+      c.drawLine(f.a - 4, lp.level, f.b + 4, lp.level, lp.edge);
     }
     c.restore();
   }
@@ -307,7 +341,7 @@ export class SceneRenderer {
     c.drawPicture(this.skyPic);
 
     if (!th.night) {
-      const cloud = fill('#ffffff', 0.88);
+      const cloud = this.cloudPaint;
       for (const cl of this.clouds) {
         const x = ((cl.x * base) % (W + 500)) - 150;
         const y = cl.y * base;
@@ -342,14 +376,14 @@ export class SceneRenderer {
   private drawVehicle(c: SkCanvas): void {
     const v = this.world.vehicle;
     const ch = v.chassis;
-    const strut = stroke('#2b3238', 5);
-    v.constraints.forEach((con, i) => {
+    const strut = this.strutPaint;
+    for (let i = 0; i < v.constraints.length; i++) {
       const wheel = v.wheels[i < 2 ? 0 : 1];
       // Matter rotates constraint.pointA in place every step, so it is already
       // the chassis-relative offset in world orientation.
-      const p = con.pointA;
+      const p = v.constraints[i].pointA;
       c.drawLine(ch.position.x + p.x, ch.position.y + p.y, wheel.position.x, wheel.position.y, strut);
-    });
+    }
     drawPictureAt(c, this.art.body, ch.position.x, ch.position.y, ch.angle);
     for (const wheel of v.wheels) drawPictureAt(c, this.art.wheel, wheel.position.x, wheel.position.y, wheel.angle);
   }
@@ -423,17 +457,23 @@ export class SceneRenderer {
 
   /** Anchor posts at both ends of a bridge or platform. */
   private drawPosts(c: SkCanvas, f: Feature): void {
-    const y = this.world.surfaceY(f.a - 10);
-    const post = fill(f.type === 'bridge' ? '#6b4a2b' : '#4a4f5c');
-    rrect(c, f.a - 16, y - 34, 9, 40, 2, post);
-    rrect(c, f.b + 7, y - 34, 9, 40, 2, post);
-    if (f.type === 'bridge') {
-      // hand rope
-      const rope = stroke('#c9a66b', 2.5);
-      const mid = (f.a + f.b) / 2;
-      c.drawLine(f.a - 12, y - 32, mid, y - 14, rope);
-      c.drawLine(mid, y - 14, f.b + 12, y - 32, rope);
+    let pic = this.stamps.get('posts-' + f.id);
+    if (!pic) {
+      const span = f.b - f.a;
+      pic = record(span + 80, 80, (k) => {
+        const post = fill(f.type === 'bridge' ? '#6b4a2b' : '#4a4f5c');
+        rrect(k, -16, -34, 9, 40, 2, post);
+        rrect(k, span + 7, -34, 9, 40, 2, post);
+        if (f.type === 'bridge') {
+          // hand rope
+          const rope = stroke('#c9a66b', 2.5);
+          k.drawLine(-12, -32, span / 2, -14, rope);
+          k.drawLine(span / 2, -14, span + 12, -32, rope);
+        }
+      }, -40, -60);
+      this.stamps.set('posts-' + f.id, pic);
     }
+    drawPictureAt(c, pic, f.a, this.world.surfaceY(f.a - 10), 0);
   }
 
   /** Yellow diamond on a post, a little before a hazard. */
@@ -483,23 +523,45 @@ export class SceneRenderer {
       rrect(k, -20, -PENDULUM_TOP - 8, 40, 14, 4, fill('#f2c94c'));
     });
     for (const p of this.world.props) {
-      if (p.kind === 'ball' && p.fid === f.id) c.drawLine(f.a, top, p.body.position.x, p.body.position.y, stroke('#16181c', 4));
+      if (p.kind === 'ball' && p.fid === f.id) c.drawLine(f.a, top, p.body.position.x, p.body.position.y, this.ropePaint);
     }
   }
 
   private drawProp(c: SkCanvas, p: Prop): void {
     const b = p.body;
-    const th = this.th;
     // soft shadow under anything loose that is near the ground
     if (!b.isStatic && p.kind !== 'plank' && p.kind !== 'seesaw' && p.kind !== 'ball') {
       const gy = this.world.surfaceY(b.position.x);
       const lift = gy - b.position.y - p.r;
-      if (lift > -6 && lift < 40) c.drawOval(tmpRect(b.position.x - p.r, gy - 3, p.r * 2, 7), fill('#000000', lift > 16 ? 0.1 : 0.2));
+      if (lift > -6 && lift < 40) c.drawOval(tmpRect(b.position.x - p.r, gy - 3, p.r * 2, 7), lift > 16 ? this.shadowFar : this.shadowNear);
     }
+    let art = this.propPics.get(p);
+    if (!art) {
+      art = this.propArt(p);
+      this.propPics.set(p, art);
+    }
+    drawPictureAt(c, art, b.position.x, b.position.y, b.angle);
+
+    // shadow on the ground where a falling rock will land
+    if (p.kind === 'fallrock' && b.speed > 1.5) {
+      const gy = this.world.surfaceY(b.position.x);
+      if (gy - b.position.y > 60) {
+        c.drawOval(tmpRect(b.position.x - p.r * 1.4, gy - 5, p.r * 2.8, 10), fill('#e0463c', 0.55));
+        this.stamp(c, 'fall-mark', b.position.x, gy, 0, (k) => k.drawPath(poly([-9, -34, 9, -34, 0, -16]), fill('#e0463c', 0.9)));
+      }
+    }
+  }
+
+  /** The artwork of a prop. Props of the same kind and size share one picture. */
+  private propArt(p: Prop): SkPicture {
+    const th = this.th;
     const r = Math.round(p.r);
     const w = Math.round(p.w);
     const h = Math.round(p.h);
-    this.stamp(c, `${p.kind}-${r}-${w}-${h}-${p.variant % 2}`, b.position.x, b.position.y, b.angle, (k) => {
+    const key = `${p.kind}-${r}-${w}-${h}-${p.variant % 2}`;
+    const known = this.stamps.get(key);
+    if (known) return known;
+    const pic = record(760, 800, (k) => {
       const outline = stroke('#101216', 2, 0.55);
       switch (p.kind) {
         case 'rock':
@@ -564,16 +626,9 @@ export class SceneRenderer {
           rrect(k, -6, h / 2, 12, 260, 0, fill('#2c3038')); // piston
           break;
       }
-    });
-
-    // shadow on the ground where a falling rock will land
-    if (p.kind === 'fallrock' && b.speed > 1.5) {
-      const gy = this.world.surfaceY(b.position.x);
-      if (gy - b.position.y > 60) {
-        c.drawOval(tmpRect(b.position.x - p.r * 1.4, gy - 5, p.r * 2.8, 10), fill('#e0463c', 0.55));
-        this.stamp(c, 'fall-mark', b.position.x, gy, 0, (k) => k.drawPath(poly([-9, -34, 9, -34, 0, -16]), fill('#e0463c', 0.9)));
-      }
-    }
+    }, -380, -440);
+    this.stamps.set(key, pic);
+    return pic;
   }
 
   dispose(): void {
@@ -581,7 +636,8 @@ export class SceneRenderer {
     this.stamps.clear();
     this.skyPic = null;
     this.liquidPaths.clear();
-    this.particles = [];
+    this.liquidPaints.clear();
+    this.liveParticles = 0;
   }
 }
 

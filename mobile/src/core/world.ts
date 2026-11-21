@@ -23,6 +23,9 @@ const PLATFORM_T = 30;
 export const FALL_WARNING = 700; // rocks start falling when the car is this far away
 export const ROCK_BURY = 0.78; // how much of a fixed rock's radius sits below ground
 const STEP_S = PHYSICS_STEP / 1000;
+/** Features without bodies of their own. */
+const PASSIVE = new Set<Feature['type']>(['checkpoint', 'hill', 'drop', 'ramp', 'gap', 'mud', 'water']);
+const PICKUP_R2 = 38 * 38;
 
 export type EndReason = 'win' | 'crash' | 'fuel' | 'fell' | 'hit';
 
@@ -73,6 +76,9 @@ export interface Chunk {
 }
 
 interface Live {
+  f: Feature;
+  /** Half the plank length of a seesaw (0 for everything else). */
+  half: number;
   bodies: Matter.Body[];
   constraints: Matter.Constraint[];
   planks: Matter.Body[];
@@ -128,7 +134,13 @@ export class GameWorld {
   chunkVersion = 0;
 
   private live = new Map<number, Live>();
-  private seesawHalf = new Map<number, number>();
+  /** The same entries as `live`, in the same order, as a plain array: it is walked several times per step. */
+  private liveList: Live[] = [];
+  /** Features that own physics bodies (the rest are terrain shapes, liquids and checkpoints). */
+  private readonly dynamic: Feature[];
+  private readonly checkpoints: Feature[];
+  private chunkFirst = NaN;
+  private chunkLast = NaN;
   private collected = new Set<string>();
   /** Checkpoints already driven through (feature ids). */
   passed = new Set<number>();
@@ -160,6 +172,8 @@ export class GameWorld {
     this.emit = emit;
     this.chasms = this.features.filter((f) => f.type === 'gap' || f.type === 'bridge' || f.type === 'platform');
     this.liquids = this.features.filter((f) => f.type === 'mud' || f.type === 'water');
+    this.dynamic = this.features.filter((f) => !PASSIVE.has(f.type));
+    this.checkpoints = this.features.filter((f) => f.type === 'checkpoint');
 
     this.engine = Engine.create({
       gravity: { x: 0, y: GRAVITY_Y },
@@ -194,10 +208,11 @@ export class GameWorld {
       }
     }
     // a seesaw plank counts as ground while the car is on it
-    for (const [id, lv] of this.live) {
-      const s = lv.seesaw;
+    const list = this.liveList;
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i].seesaw;
       if (!s) continue;
-      const half = this.seesawHalf.get(id) ?? 0;
+      const half = list[i].half;
       const dx = x - s.position.x;
       if (Math.abs(dx) < half * Math.cos(s.angle)) return Math.min(this.profile.surfaceY(x), s.position.y + dx * Math.tan(s.angle) - PLANK_T / 2);
     }
@@ -278,6 +293,9 @@ export class GameWorld {
   private updateChunks(focusX: number): void {
     const first = Math.max(-1, Math.floor((focusX - 900) / CHUNK_SIZE));
     const last = Math.floor((focusX + 1500) / CHUNK_SIZE);
+    if (first === this.chunkFirst && last === this.chunkLast) return; // nothing to add or drop
+    this.chunkFirst = first;
+    this.chunkLast = last;
     for (let i = first; i <= last; i++) if (!this.chunks.has(i)) this.buildChunk(i);
     for (const [i, chunk] of this.chunks) {
       if (i < first - 1 || i > last + 1) this.destroyChunk(i, chunk);
@@ -346,15 +364,19 @@ export class GameWorld {
   // ------------------------------------------------------------------ obstacles
   private updateFeatures(): void {
     const x = this.vehicle.x;
-    for (const f of this.features) {
-      if (f.type === 'checkpoint' || f.type === 'hill' || f.type === 'drop' || f.type === 'ramp' || f.type === 'gap' || f.type === 'mud' || f.type === 'water') continue;
+    const dynamic = this.dynamic;
+    for (let i = 0; i < dynamic.length; i++) {
+      const f = dynamic[i];
       const near = x > f.x0 - 1300 && x < f.x1 + 1100;
       const lv = this.live.get(f.id);
       if (near && !lv) this.activate(f);
       else if (!near && lv) this.deactivate(f.id);
     }
-    for (const [id, lv] of this.live) {
-      const f = this.features[this.featureIndex(id)];
+    // nothing below adds or removes a live entry (a rock fall or a roller only adds props)
+    const list = this.liveList;
+    for (let i = 0; i < list.length; i++) {
+      const lv = list[i];
+      const f = lv.f;
       if (lv.platform) {
         const y = lv.rimY + PLATFORM_T / 2 + f.h * Math.sin(this.tick * 0.034 + (f.seed % 7));
         // third argument (missing from the typings): also set the velocity, so the platform carries the car
@@ -408,10 +430,6 @@ export class GameWorld {
     }
   }
 
-  private featureIndex(id: number): number {
-    return this.features.findIndex((f) => f.id === id);
-  }
-
   private addProp(lv: Live, prop: Prop): void {
     lv.bodies.push(prop.body);
     this.props.push(prop);
@@ -435,8 +453,9 @@ export class GameWorld {
   }
 
   private activate(f: Feature): void {
-    const lv: Live = { bodies: [], constraints: [], planks: [], platform: null, seesaw: null, ball: null, rimY: this.profile.surfaceY(f.a), triggered: false };
+    const lv: Live = { f, half: 0, bodies: [], constraints: [], planks: [], platform: null, seesaw: null, ball: null, rimY: this.profile.surfaceY(f.a), triggered: false };
     this.live.set(f.id, lv);
+    this.liveList.push(lv);
     const sy = this.profile.surfaceY;
     switch (f.type) {
       case 'rocks':
@@ -525,7 +544,7 @@ export class GameWorld {
           collisionFilter: { mask: 0xffffffff & ~CAT_TERRAIN },
         });
         lv.seesaw = body;
-        this.seesawHalf.set(f.id, len / 2);
+        lv.half = len / 2;
         this.addProp(lv, { kind: 'seesaw', body, fid: f.id, r: len / 2, w: len, h: PLANK_T, variant: 0 });
         const pin = Constraint.create({ pointA: { x: cx, y: py }, bodyB: body, pointB: { x: 0, y: 0 }, length: 0, stiffness: 1 });
         lv.constraints.push(pin);
@@ -566,6 +585,7 @@ export class GameWorld {
     Composite.remove(this.engine.world, lv.bodies as never);
     this.props = this.props.filter((p) => p.fid !== id);
     this.live.delete(id);
+    this.liveList = this.liveList.filter((l) => l !== lv);
   }
 
   /** Mud drags the wheels, water slows the car and floats it a little. */
@@ -711,12 +731,18 @@ export class GameWorld {
 
   private checkPickups(): void {
     const v = this.vehicle;
-    const pts = [v.chassis.position, v.rearWheel.position, v.frontWheel.position];
+    const a = v.chassis.position;
+    const b = v.rearWheel.position;
+    const c = v.frontWheel.position;
+    const vx = v.x;
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i];
-      if (Math.abs(p.x - v.x) > 100) continue;
-      let hit = false;
-      for (const pos of pts) if (Math.hypot(pos.x - p.x, pos.y - p.y) < 38) hit = true;
+      const dx = p.x - vx;
+      if (dx > 100 || dx < -100) continue;
+      const hit =
+        (a.x - p.x) * (a.x - p.x) + (a.y - p.y) * (a.y - p.y) < PICKUP_R2 ||
+        (b.x - p.x) * (b.x - p.x) + (b.y - p.y) * (b.y - p.y) < PICKUP_R2 ||
+        (c.x - p.x) * (c.x - p.x) + (c.y - p.y) * (c.y - p.y) < PICKUP_R2;
       if (!hit) continue;
       this.pickups.splice(i, 1);
       this.collected.add(p.key);
@@ -732,8 +758,8 @@ export class GameWorld {
 
   private checkCheckpoints(): void {
     const x = this.vehicle.x;
-    for (const f of this.features) {
-      if (f.type !== 'checkpoint' || this.passed.has(f.id) || x < f.a) continue;
+    for (const f of this.checkpoints) {
+      if (x < f.a || this.passed.has(f.id)) continue;
       this.passed.add(f.id);
       this.checkpoint = { x: f.a, fuel: this.fuel, n: f.n };
       this.emit({ type: 'checkpoint', n: f.n });
@@ -866,5 +892,6 @@ export class GameWorld {
     this.props = [];
     this.pickups = [];
     this.live.clear();
+    this.liveList = [];
   }
 }

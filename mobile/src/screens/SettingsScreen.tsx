@@ -39,7 +39,16 @@ export default function SettingsScreen() {
             value={set.controlMode === 'splitscreen'}
             onChange={(v) => updateSettings({ controlMode: v ? 'splitscreen' : 'pedals' })}
           />
-          <Toggle label="Show frame rate" value={set.showFps} onChange={(v) => updateSettings({ showFps: v })} />
+          <View style={st.rateRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={st.rateLabel}>Frame rate</Text>
+              <Text style={st.help}>
+                {set.frameRate === 'auto' ? 'Auto: 60 where the phone can hold it, a steady 30 where it cannot' : set.frameRate === '30' ? 'Always 30: smoothest on slow phones, uses less battery' : 'Always 60'}
+              </Text>
+            </View>
+            <Btn small label={set.frameRate === 'auto' ? 'AUTO' : set.frameRate} color={C.blue} onPress={() => updateSettings({ frameRate: set.frameRate === 'auto' ? '60' : set.frameRate === '60' ? '30' : 'auto' })} style={{ minWidth: 76 }} />
+          </View>
+          <Toggle label="Show frame rate" hint="Also shows how long the physics and the drawing take" value={set.showFps} onChange={(v) => updateSettings({ showFps: v })} />
           <Text style={st.help}>
             Gas drives forward and tilts the nose up in the air. Brake slows the car, reverses once it has stopped, and tilts the nose down in the air. Keep the
             driver's head off the ground. Flips, long jumps and wheelies pay bonus coins; fuel cans refill the tank; a checkpoint flag lets you continue after a
@@ -106,4 +115,6 @@ const st = StyleSheet.create({
   stat: { color: C.text, fontSize: 14, fontWeight: '600', marginTop: 4 },
   warn: { color: '#ff9c8a', fontSize: 13, fontWeight: '700' },
   row: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  rateRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 6 },
+  rateLabel: { color: C.text, fontSize: 15, fontWeight: '800' },
 });

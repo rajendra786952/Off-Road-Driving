@@ -14,6 +14,11 @@
 > **React Native version of the 2D game:** `mobile/` holds a separate Expo / React Native app that rebuilds
 > the classic 2D hill-climb natively with 100 levels and 100 vehicles. It is named **Offroad Racing 4x4**. See [mobile/README.md](mobile/README.md).
 > It does not change anything described below.
+>
+> **The 3D game has moved.** Its code (`src/drive`), textures, models, tests and scripts now live in `mobile3d/`, a
+> React Native app named **Offroad Racing 4x4 3D**. See [mobile3d/README.md](mobile3d/README.md). The web / Capacitor app in this
+> folder no longer builds: `src/main.js` and `src/ui` still import the removed 3D code, and the 3D sections below describe
+> the game as it was. The removed files are in git history (last commit that has them: d1bfcc3).
 
 ## Quick start
 

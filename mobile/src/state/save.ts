@@ -12,12 +12,16 @@ export const SAVE_KEY = 'trail-torque-2d-save';
 
 export type ControlMode = 'pedals' | 'splitscreen';
 
+/** How often frames are drawn: auto drops to a steady 30 on a phone that cannot hold 60. */
+export type FrameRate = 'auto' | '60' | '30';
+
 export interface Settings {
   sound: boolean;
   music: boolean;
   vibration: boolean;
   controlMode: ControlMode;
   showFps: boolean;
+  frameRate: FrameRate;
 }
 
 export interface SaveData {
@@ -50,7 +54,7 @@ export function defaultSave(): SaveData {
     upgrades: {},
     paint: {},
     levels: {},
-    settings: { sound: true, music: true, vibration: true, controlMode: 'pedals', showFps: false },
+    settings: { sound: true, music: true, vibration: true, controlMode: 'pedals', showFps: false, frameRate: 'auto' },
     stats: { runs: 0, wins: 0, totalCoins: 0, distance: 0 },
     ads: { cars: {}, levels: [], watched: 0 },
   };
@@ -72,6 +76,7 @@ export function migrateSave(raw: unknown): SaveData {
       vibration: r.settings.vibration !== false,
       controlMode: r.settings.controlMode === 'splitscreen' ? 'splitscreen' : 'pedals',
       showFps: !!r.settings.showFps,
+      frameRate: r.settings.frameRate === '60' || r.settings.frameRate === '30' ? r.settings.frameRate : 'auto',
     };
   }
   if (r.stats && typeof r.stats === 'object') {

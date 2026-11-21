@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Offroad Racing 4x4 3D",
+    "slug": "offroad-racing-4x4-3d",
+    "version": "1.0.0",
+    "orientation": "landscape",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b1217",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.offroadracing4x4.app3d"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#e2541f",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.offroadracing4x4.app3d"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-audio",
+      "expo-screen-orientation",
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "6fc8a07b-1de2-4676-b19a-3751452b65da"
+      }
+    }
+  }
+}

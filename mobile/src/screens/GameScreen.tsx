@@ -11,6 +11,7 @@ import { GameWorld, type GameEvent, type RunResult } from '../core/world';
 import { MAX_STEPS_PER_FRAME, PHYSICS_STEP, PX_PER_METER, SPAWN_X } from '../core/constants';
 import { SceneRenderer } from '../render/scene';
 import { botControls, newBot } from '../core/bot';
+import { FramePacer } from '../core/pacing';
 import { LEVEL_COUNT, getLevel } from '../data/levels';
 import { THEMES } from '../data/themes';
 import { getVehicle, paintSpec } from '../data/vehicles';
@@ -32,6 +33,18 @@ interface Hud {
   metres: number;
   speed: number;
   fps: number;
+  perf: string;
+}
+
+/** Measured in the game loop, shown with "Show frame rate": what one frame costs on this phone. */
+interface Perf {
+  fps: number;
+  /** ms per physics step and ms to build one frame's drawing, averaged over the last half second */
+  physics: number;
+  draw: number;
+  /** longest gap between two frames in that half second */
+  worst: number;
+  target: number;
 }
 
 const END_TEXT: Record<string, { title: string; tip: string }> = {
@@ -75,25 +88,28 @@ const Toast = memo(
 );
 
 // ------------------------------------------------------------------ HUD
-const HudView = memo(function HudView({ worldRef, fpsRef, title, showFps }: { worldRef: React.RefObject<GameWorld | null>; fpsRef: React.RefObject<number>; title: string; showFps: boolean }) {
+const HudView = memo(function HudView({ worldRef, perfRef, title, showFps }: { worldRef: React.RefObject<GameWorld | null>; perfRef: React.RefObject<Perf>; title: string; showFps: boolean }) {
   const insets = useSafeAreaInsets();
-  const [hud, setHud] = useState<Hud>({ fuel: 1, coins: 0, progress: 0, metres: 0, speed: 0, fps: 0 });
+  const [hud, setHud] = useState<Hud>({ fuel: 1, coins: 0, progress: 0, metres: 0, speed: 0, fps: 0, perf: '' });
   useEffect(() => {
     const id = setInterval(() => {
       const w = worldRef.current;
       if (!w) return;
+      const p = perfRef.current;
       const next: Hud = {
         fuel: Math.round((w.fuel / w.fuelMax) * 50) / 50,
         coins: Math.floor(w.runCoins),
         progress: Math.round(w.progress * 100) / 100,
         metres: Math.max(0, Math.floor((w.vehicle.x - SPAWN_X) / PX_PER_METER)),
         speed: Math.round(Math.abs(w.speed) * 3.6 * 3),
-        fps: Math.round(fpsRef.current ?? 0),
+        fps: showFps ? Math.round(p.fps) : 0,
+        perf: showFps ? `physics ${p.physics.toFixed(1)} ms  draw ${p.draw.toFixed(1)} ms  worst ${Math.round(p.worst)} ms  target ${p.target}` : '',
       };
-      setHud((h) => (h.fuel === next.fuel && h.coins === next.coins && h.progress === next.progress && h.metres === next.metres && h.speed === next.speed && h.fps === next.fps ? h : next));
-    }, 130);
+      setHud((h) => (h.fuel === next.fuel && h.coins === next.coins && h.progress === next.progress && h.metres === next.metres && h.speed === next.speed && h.fps === next.fps && h.perf === next.perf ? h : next));
+      // five times a second is plenty for a fuel bar, and every update is a React render on the game's thread
+    }, 200);
     return () => clearInterval(id);
-  }, [worldRef, fpsRef]);
+  }, [worldRef, perfRef, showFps]);
 
   const w = worldRef.current;
   const low = hud.fuel < 0.25;
@@ -119,6 +135,7 @@ const HudView = memo(function HudView({ worldRef, fpsRef, title, showFps }: { wo
         <Text style={st.hudDim}>
           {hud.metres} m{w ? ` / ${Math.floor((w.finishX - SPAWN_X) / PX_PER_METER)} m` : ''}   {hud.speed} km/h{showFps ? `   ${hud.fps} fps` : ''}
         </Text>
+        {showFps ? <Text style={st.hudPerf}>{hud.perf}</Text> : null}
       </View>
     </View>
   );
@@ -151,7 +168,8 @@ export default function GameScreen({ levelId }: { levelId: number }) {
 
   const worldRef = useRef<GameWorld | null>(null);
   const rendererRef = useRef<SceneRenderer | null>(null);
-  const fpsRef = useRef(60);
+  const perfRef = useRef<Perf>({ fps: 60, physics: 0, draw: 0, worst: 0, target: 60 });
+  const pacerRef = useRef<FramePacer | null>(null);
   // starts from the window size so the first frame can be drawn before layout reports back
   const size = useRef({ w: Dimensions.get('window').width, h: Dimensions.get('window').height });
   const controls = useRef({ gas: false, brake: false, keyGas: false, keyBrake: false });
@@ -259,36 +277,86 @@ export default function GameScreen({ levelId }: { levelId: number }) {
     }
 
     let raf = 0;
-    let last = 0;
     let acc = 0;
     let alive = true;
+    const pacer = new FramePacer(getState().save.settings.frameRate);
+    pacerRef.current = pacer;
+    perfRef.current.target = pacer.target;
+    // Every frame makes a new picture. The last few are released by hand: they hold native
+    // memory the JavaScript garbage collector cannot see, so it would let them pile up.
+    const old: SkPicture[] = [];
+    let shown: SkPicture | null = null; // kept here: reading a shared value back from this thread is slow
+    let bounds = Skia.XYWHRect(0, 0, 1, 1);
+    let boundsW = 0;
+    let boundsH = 0;
+    // measurements for the "Show frame rate" line
+    let mPhysics = 0;
+    let mSteps = 0;
+    let mDraw = 0;
+    let mFrames = 0;
+    let mWorst = 0;
+    let mSince = 0;
     const frame = (t: number) => {
       if (!alive) return;
       raf = requestAnimationFrame(frame);
-      const dt = Math.min(last ? t - last : 16.7, 50);
-      last = t;
       const { w, h } = size.current;
-      if (w === 0 || phaseRef.current === 'paused') return;
-      fpsRef.current += (1000 / Math.max(1, dt) - fpsRef.current) * 0.1;
+      if (w === 0 || phaseRef.current === 'paused') {
+        pacer.resume();
+        return;
+      }
+      const elapsed = pacer.begin(t);
+      if (elapsed === 0) return; // not this frame's turn (30 fps mode, or a 90 / 120 Hz screen)
+      const dt = Math.min(elapsed, 50);
 
       const c = controls.current;
       const gas = c.gas || c.keyGas;
       const brake = c.brake || c.keyBrake;
       acc += dt;
       let steps = 0;
+      const t0 = performance.now();
       while (acc >= PHYSICS_STEP && steps < MAX_STEPS_PER_FRAME) {
         world.step(gas, brake);
         acc -= PHYSICS_STEP;
         steps++;
       }
       if (steps === MAX_STEPS_PER_FRAME) acc = 0; // never spiral after a long stall
+      const t1 = performance.now();
 
-      if (world.state === 'playing') updateEngine(Math.min(1, Math.abs(world.speed) / 14), gas && world.fuel > 0 ? 1 : 0);
+      if (world.state === 'playing') {
+        updateEngine(Math.min(1, Math.abs(world.speed) / 14), gas && world.fuel > 0 ? 1 : 0);
+        if (pacer.observe(elapsed)) perfRef.current.target = 30;
+      }
 
       renderer.update(dt, w, h);
+      if (w !== boundsW || h !== boundsH) {
+        boundsW = w;
+        boundsH = h;
+        bounds = Skia.XYWHRect(0, 0, w, h);
+      }
       const rec = Skia.PictureRecorder();
-      renderer.draw(rec.beginRecording(Skia.XYWHRect(0, 0, w, h)), w, h, t);
-      picture.value = rec.finishRecordingAsPicture();
+      renderer.draw(rec.beginRecording(bounds), w, h, t);
+      const next = rec.finishRecordingAsPicture();
+      if (shown) old.push(shown);
+      shown = next;
+      picture.value = next;
+      // the screen may still be showing the previous two, so only older ones are released
+      if (old.length > 3) old.shift()?.dispose();
+      const t2 = performance.now();
+
+      mPhysics += t1 - t0;
+      mSteps += steps;
+      mDraw += t2 - t1;
+      mFrames++;
+      if (elapsed > mWorst) mWorst = elapsed;
+      if (t - mSince >= 500) {
+        const p = perfRef.current;
+        p.fps = (mFrames * 1000) / Math.max(1, t - mSince);
+        p.physics = mSteps ? mPhysics / mSteps : 0;
+        p.draw = mDraw / mFrames;
+        p.worst = mWorst;
+        mPhysics = mSteps = mDraw = mFrames = mWorst = 0;
+        mSince = t;
+      }
     };
     raf = requestAnimationFrame(frame);
     if (getState().save.settings.sound) startEngine();
@@ -466,13 +534,14 @@ export default function GameScreen({ levelId }: { levelId: number }) {
         size.current.h = e.nativeEvent.layout.height;
       }}
     >
-      <Canvas style={StyleSheet.absoluteFill}>
+      {/* opaque: the sky covers every pixel, so Android can use its cheapest surface and skip blending the game with the window behind it */}
+      <Canvas style={StyleSheet.absoluteFill} opaque>
         <Picture picture={picture} />
       </Canvas>
 
       <View collapsable={false} style={StyleSheet.absoluteFill} onTouchStart={onTouch} onTouchMove={onTouch} onTouchEnd={onTouch} onTouchCancel={onTouch} {...(mouse as object)} />
 
-      <HudView worldRef={worldRef} fpsRef={fpsRef} title={`${level.id}. ${level.name}`} showFps={settings.showFps} />
+      <HudView worldRef={worldRef} perfRef={perfRef} title={`${level.id}. ${level.name}`} showFps={settings.showFps} />
       <Toast ref={toast} />
       <Pedal label="BRAKE" value={brakeAnim} side="left" faint={split} />
       <Pedal label="GAS" value={gasAnim} side="right" faint={split} />
@@ -563,6 +632,7 @@ const st = StyleSheet.create({
   hudMid: { flex: 1, alignItems: 'center', paddingHorizontal: 8 },
   hudLabel: { color: '#ffffff', fontSize: 11, fontWeight: '900', marginRight: 6, textShadowColor: '#000', textShadowRadius: 3 },
   hudTitle: { color: '#ffffff', fontSize: 14, fontWeight: '800', textShadowColor: '#000', textShadowRadius: 4 },
+  hudPerf: { color: '#ffe9a8', fontSize: 11, fontWeight: '700', textShadowColor: '#000', textShadowRadius: 3, marginTop: 2 },
   hudDim: { color: '#e6edf2', fontSize: 12, fontWeight: '700', textShadowColor: '#000', textShadowRadius: 3 },
   fuelBar: { flex: 1, flexDirection: 'row', borderWidth: 2, borderColor: 'rgba(14,26,34,0.85)', borderRadius: 9 },
   progress: { flexDirection: 'row', width: '70%', maxWidth: 320, marginVertical: 4, borderWidth: 2, borderColor: 'rgba(14,26,34,0.85)', borderRadius: 6 },

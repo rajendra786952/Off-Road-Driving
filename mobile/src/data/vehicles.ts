@@ -284,6 +284,46 @@ export function defaultUpgrades(): Upgrades {
   return { engine: 1, tires: 1, suspension: 1, brakes: 1, fuel: 1 };
 }
 
+/**
+ * Stunt handling per body style. `agility` scales air-control torque on top of what
+ * the vehicle's real moment of inertia gives (heavy trucks already turn slowly because
+ * of it); `stability` widens (above 1) or narrows the landing angle that still counts
+ * as a clean landing; `harsh` multiplies damage from hard landings.
+ */
+export const STUNT_STYLE: Record<CarStyle, { agility: number; stability: number; harsh: number }> = {
+  jeep: { agility: 1.0, stability: 1.0, harsh: 1.0 }, // balanced rotation and stability
+  buggy: { agility: 1.25, stability: 0.9, harsh: 1.1 }, // fast rotation, excellent air control, light frame
+  pickup: { agility: 1.0, stability: 1.0, harsh: 1.0 }, // heavy: slower rotation
+  monster: { agility: 1.05, stability: 0.72, harsh: 1.25 }, // big jumps, hard to land
+  suv: { agility: 0.95, stability: 1.25, harsh: 0.85 }, // stable landings, moderate rotation
+  van: { agility: 0.95, stability: 1.1, harsh: 0.9 },
+  rally: { agility: 1.1, stability: 1.15, harsh: 0.9 },
+  muscle: { agility: 0.95, stability: 0.95, harsh: 1.05 },
+  sports: { agility: 1.15, stability: 0.85, harsh: 1.15 },
+  truck: { agility: 0.9, stability: 1.0, harsh: 1.0 },
+};
+
+/** Rotational inertia of the whole car about its centre (chassis plus the two wheels hanging off it). */
+export function rotationalInertia(spec: VehicleSpec): number {
+  const { w, h, density } = spec.body;
+  const mc = density * w * h;
+  const ic = (mc * (w * w + h * h)) / 12;
+  const mw = spec.wheel.density * Math.PI * spec.wheel.r * spec.wheel.r;
+  const dx = spec.wheel.base;
+  const dy = h / 2 - 2 + spec.suspension.rest;
+  return ic + 2 * mw * (dx * dx + dy * dy);
+}
+
+const REF_INERTIA = rotationalInertia({
+  ...({} as VehicleSpec),
+  body: BASES.jeep.body, wheel: BASES.jeep.wheel, suspension: BASES.jeep.suspension,
+});
+
+/** Air-control torque scale: a car turns in the air by `air` x this, per step per step. */
+export const AIR_GAIN = 10;
+/** Fastest spin a reference (Jeep) chassis can reach in the air, rad per step. */
+export const BASE_AIR_SPIN = 0.22;
+
 export interface VehicleStats {
   accel: number;
   maxWheelSpeed: number;
@@ -294,6 +334,10 @@ export interface VehicleStats {
   damping: number;
   airTorque: number;
   maxAirSpin: number;
+  /** Landing tolerance multiplier (1 = Jeep). */
+  stability: number;
+  /** Hard landing damage multiplier. */
+  harsh: number;
   brakeGrip: number;
   fuelCapacity: number;
   fuelUse: number;
@@ -306,6 +350,9 @@ export function computeStats(spec: VehicleSpec, ups: Partial<Upgrades>): Vehicle
   const s = (ups.suspension || 1) - 1;
   const f = (ups.fuel || 1) - 1;
   const b = (ups.brakes || 1) - 1;
+  const ss = STUNT_STYLE[spec.style];
+  // a heavier, longer car is harder to turn: torque / inertia, softened with a square root
+  const inertiaK = Math.sqrt(REF_INERTIA / rotationalInertia(spec));
   return {
     accel: spec.power.accel * (1 + 0.14 * e),
     maxWheelSpeed: spec.power.maxWheelSpeed * (1 + 0.06 * e),
@@ -314,8 +361,10 @@ export function computeStats(spec: VehicleSpec, ups: Partial<Upgrades>): Vehicle
     grip: spec.grip * (1 + 0.1 * t),
     stiffness: Math.min(0.65, spec.suspension.stiffness * (1 + 0.08 * s)),
     damping: spec.suspension.damping * (1 + 0.06 * s),
-    airTorque: spec.air,
-    maxAirSpin: 0.08,
+    airTorque: spec.air * AIR_GAIN * ss.agility * inertiaK,
+    maxAirSpin: BASE_AIR_SPIN * Math.sqrt(ss.agility) * inertiaK,
+    stability: ss.stability,
+    harsh: ss.harsh,
     brakeGrip: Math.max(0.7, spec.brake - 0.012 * b),
     fuelCapacity: FUEL.base + 25 * f,
     fuelUse: spec.fuelUse,
@@ -332,7 +381,7 @@ export function displayStats(spec: VehicleSpec, ups: Partial<Upgrades>): Record<
   return {
     Speed: c((st.maxWheelSpeed * spec.wheel.r) / 19),
     Acceleration: c((st.accel / 0.1) * 0.5 + (st.driveForce / 0.055) * 0.5),
-    Handling: c((st.grip / 3.6) * 0.6 + (st.airTorque / 0.0022) * 0.4),
+    Handling: c((st.grip / 3.6) * 0.6 + (st.airTorque / 0.03) * 0.4),
     Braking: c((1 - st.brakeGrip) / 0.3),
     Suspension: c((st.stiffness / 0.65) * 0.6 + (st.damping / 0.38) * 0.4),
   };

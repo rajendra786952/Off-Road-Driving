@@ -3,6 +3,7 @@
 // hand-written layouts and never duplicate code.
 import { mulberry32 } from './rng';
 import { BLEND, SEGMENT } from './terrain';
+import { STEEP_VALLEY, STUNT_KIND, landingLength, runUpLength } from './stuntshape';
 
 export type FeatureType =
   | 'rocks' // fixed rocks half buried in the ground
@@ -22,6 +23,8 @@ export type FeatureType =
   | 'roller' // boulder rolls towards the car
   | 'seesaw' // plank on a pivot that tips under the car
   | 'pendulum' // wrecking ball swinging across the road
+  | 'stunt' // stunt ramp, see core/stuntshape.ts (n is the kind)
+  | 'steep' // long steep descent into a valley, then a steep climb out: brake going down
   | 'checkpoint';
 
 export interface Feature {
@@ -38,6 +41,8 @@ export interface Feature {
   /** Count, or a second size parameter. */
   n: number;
   seed: number;
+  /** Stunts: how far the road falls away after the last lip. */
+  d?: number;
 }
 
 export const FEATURE_LABEL: Record<FeatureType, string> = {
@@ -58,15 +63,30 @@ export const FEATURE_LABEL: Record<FeatureType, string> = {
   roller: 'Rolling boulders',
   seesaw: 'Seesaws',
   pendulum: 'Wrecking balls',
+  stunt: 'Stunt ramps',
+  steep: 'Steep descents',
   checkpoint: 'Checkpoints',
 };
+
+/** Level index (0-based) at which each stunt ramp kind (stuntshape.ts) first appears. */
+export const STUNT_UNLOCK: [number, number][] = [
+  [STUNT_KIND.large, 5], // levels 6-10: flips
+  [STUNT_KIND.steep, 7],
+  [STUNT_KIND.double, 20], // levels 21-30: several ramps, hard landings
+  [STUNT_KIND.uneven, 24],
+  [STUNT_KIND.downhill, 30], // levels 31-50: combinations
+  [STUNT_KIND.mountain, 34],
+  [STUNT_KIND.combo, 38],
+];
 
 /** Level index (0-based) at which each obstacle first appears. */
 export const FEATURE_UNLOCK: [FeatureType, number][] = [
   ['rocks', 1],
   ['crates', 1],
+  ['steep', 1],
   ['logs', 2],
-  ['ramp', 3],
+  ['ramp', 2],
+  ['stunt', 5],
   ['barrels', 4],
   ['hill', 5],
   ['mud', 7],
@@ -81,6 +101,13 @@ export const FEATURE_UNLOCK: [FeatureType, number][] = [
   ['platform', 36],
   ['drop', 42],
 ];
+
+/** Level index (0-based) from which some bridges collapse under a car that crawls. */
+export const COLLAPSE_FROM = 30;
+
+/** Obstacles after which a brake zone often follows at once (jump, brake, steep descent). */
+const BRAKE_AFTER = new Set<FeatureType>(['stunt', 'gap', 'bridge', 'mud', 'ramp', 'platform']);
+const SEQUENCE_FROM = 9;
 
 const snap = (x: number) => Math.round(x / SEGMENT) * SEGMENT;
 
@@ -101,8 +128,13 @@ export function generateFeatures(input: FeatureGenInput): Feature[] {
     if (index < from) continue;
     // a newly introduced obstacle is common for a few levels so the player meets it
     const fresh = index - from < 3 ? 2.2 : 1;
-    pool.push([type, fresh * (bias[type] ?? 1)]);
+    let weight = fresh * (bias[type] ?? 1);
+    if (type === 'stunt') weight *= 1.2 + 0.3 * STUNT_UNLOCK.filter(([, at]) => index >= at).length;
+    if (type === 'steep') weight *= 1.3;
+    pool.push([type, weight]);
   }
+  const kinds = STUNT_UNLOCK.filter(([, at]) => index >= at);
+  const newest = kinds.reduce((m, [, at]) => Math.max(m, at), -1);
   const total = pool.reduce((s, p) => s + p[1], 0);
   const pick = (): FeatureType => {
     let r = rnd() * total;
@@ -118,9 +150,20 @@ export function generateFeatures(input: FeatureGenInput): Feature[] {
   let x = 1500 + rnd() * 400;
   let id = 1;
   let last: FeatureType | null = null;
+  let forceSteep = false;
+  let hasJump = false;
+  let hasSteep = false;
   while (pool.length && x < end) {
     let type = pick();
     if (type === last && pool.length > 1) type = pick();
+    // a jump, a gap, a bridge or a mud pit is often followed straight away by a steep descent:
+    // land, let off the gas, brake down the slope, then accelerate again in the valley
+    // every level from the sixth on has a jump, and from the eleventh a steep descent: the
+    // lessons of that stretch of levels are never left to chance
+    if (index >= 5 && !hasJump && out.length >= 1) type = 'stunt';
+    else if (index >= 10 && !hasSteep && out.length >= 3 && pool.some(([t]) => t === 'steep')) type = 'steep';
+    if (forceSteep) type = 'steep';
+    forceSteep = false;
     last = type;
     const f: Feature = { id: id++, type, x0: x, x1: x, a: x, b: x, h: 0, n: 0, seed: Math.floor(rnd() * 1e9) };
     switch (type) {
@@ -166,6 +209,73 @@ export function generateFeatures(input: FeatureGenInput): Feature[] {
         f.x0 = f.a - 200 - BLEND;
         f.x1 = f.b + 520 + BLEND;
         break;
+      case 'stunt': {
+        // a ramp kind this level has unlocked; the newest one is common so it is met on purpose
+        const weights = kinds.map(([k, at]) => [k, at === newest && index - at < 3 ? 3 : 1] as const);
+        let r = rnd() * weights.reduce((t, w) => t + w[1], 0);
+        let kind: number = weights[0][0];
+        for (const [k, w] of weights) {
+          r -= w;
+          if (r <= 0) {
+            kind = k;
+            break;
+          }
+        }
+        f.n = kind;
+        const grow = Math.min(1.35, 0.92 + 0.5 * d); // ramps get bigger as the levels go on
+        const run = runUpLength(kind);
+        f.a = snap(x + BLEND + run);
+        switch (kind) {
+          case STUNT_KIND.large:
+            f.h = (78 + rnd() * 10) * grow;
+            f.b = f.a + snap(320 + rnd() * 40);
+            f.d = 380 * grow;
+            break;
+          case STUNT_KIND.steep:
+            f.h = (56 + rnd() * 8) * grow;
+            f.b = f.a + snap(240 + rnd() * 40);
+            f.d = 320 * grow;
+            break;
+          case STUNT_KIND.double:
+            f.h = (80 + rnd() * 10) * grow;
+            f.b = f.a + 1150;
+            f.d = 2.5 * f.h;
+            break;
+          case STUNT_KIND.downhill:
+            f.h = (72 + rnd() * 10) * grow;
+            f.b = f.a + snap(280 + rnd() * 40);
+            f.d = 480 * Math.min(grow, 1.1);
+            break;
+          case STUNT_KIND.mountain:
+            f.h = (66 + rnd() * 8) * grow;
+            f.b = f.a + snap(300 + rnd() * 40);
+            f.d = 480 * Math.min(grow, 1.1);
+            break;
+          case STUNT_KIND.uneven:
+            f.h = (76 + rnd() * 10) * grow;
+            f.b = f.a + snap(320 + rnd() * 40);
+            f.d = 300 * grow;
+            break;
+          default: // combo
+            f.h = (80 + rnd() * 8) * grow;
+            f.b = f.a + 1280;
+            f.d = 2.5 * f.h;
+        }
+        f.x0 = f.a - run - BLEND;
+        f.x1 = f.b + landingLength(kind) + BLEND;
+        break;
+      }
+      case 'steep': {
+        // depth and steepness grow with the level; the climb out needs momentum from the valley floor
+        const g = Math.min(1, Math.max(0, (index - 1) / 70));
+        f.h = 170 + 170 * g + rnd() * 40;
+        f.n = snap(f.h / (0.33 + 0.17 * g));
+        f.a = snap(x + BLEND + 300);
+        f.b = f.a + f.n + STEEP_VALLEY + snap(f.h / (0.5 + 0.12 * g));
+        f.x0 = f.a - 300 - BLEND;
+        f.x1 = f.b + 420 + BLEND;
+        break;
+      }
       case 'gap':
         f.h = 20 + rnd() * 8; // lip height
         f.n = 30 + rnd() * 14; // how much lower the far side is
@@ -175,6 +285,7 @@ export function generateFeatures(input: FeatureGenInput): Feature[] {
         f.x1 = f.b + 520 + BLEND;
         break;
       case 'bridge':
+        f.n = index >= COLLAPSE_FROM && rnd() < 0.5 ? 1 : 0; // 1: collapses under a slow car
         f.a = snap(x + BLEND + 120);
         f.b = f.a + snap(360 + rnd() * 240);
         f.x0 = f.a - 120 - BLEND;
@@ -247,7 +358,10 @@ export function generateFeatures(input: FeatureGenInput): Feature[] {
     }
     if (f.x1 > end) break;
     out.push(f);
-    const spacing = 1500 - 850 * d + rnd() * (900 - 400 * d);
+    if (f.type === 'stunt' || f.type === 'ramp') hasJump = true;
+    if (f.type === 'steep') hasSteep = true;
+    forceSteep = BRAKE_AFTER.has(f.type) && index >= SEQUENCE_FROM && pool.some(([t]) => t === 'steep') && rnd() < 0.35 + 0.2 * d;
+    const spacing = forceSteep ? 200 + rnd() * 200 : 1500 - 850 * d + rnd() * (900 - 400 * d);
     x = f.x1 + spacing;
   }
 

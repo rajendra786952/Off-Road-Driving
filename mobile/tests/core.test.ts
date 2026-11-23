@@ -64,7 +64,7 @@ test('terrain is continuous outside holes and flat at the start', () => {
     const p = createTerrainProfile(level.terrain, features);
     assert.ok(Math.abs(p.surfaceY(SPAWN_X) - 400) < 30);
     for (let x = 0; x < level.length; x += 40) {
-      const inHole = features.some((f) => ['gap', 'bridge', 'platform', 'ramp'].includes(f.type) && x >= f.a - 80 && x <= f.b + 80);
+      const inHole = features.some((f) => ['gap', 'bridge', 'platform', 'ramp', 'stunt'].includes(f.type) && x >= f.a - 80 && x <= f.b + 80);
       if (!inHole) assert.ok(Math.abs(p.heightAt(x + 40) - p.heightAt(x)) < 90, `level ${id}: step at x=${x}`);
       assert.ok(Number.isFinite(p.heightAt(x)));
     }
@@ -106,7 +106,7 @@ test('there are 100 distinct vehicles with the original four unchanged', () => {
   assert.equal(getVehicle('rally-buggy').price, 3500);
   assert.equal(getVehicle('monster-truck').price, 4500);
   assert.equal(computeStats(jeep, defaultUpgrades()).brakeGrip, 0.88);
-  assert.equal(computeStats(jeep, defaultUpgrades()).airTorque, 0.0016);
+  assert.ok(computeStats(jeep, defaultUpgrades()).airTorque > 0.0016 * 2, 'air control is strong enough to flip');
   for (let i = 1; i < VEHICLES.length; i++) assert.ok(VEHICLES[i].price >= VEHICLES[i - 1].price, 'sorted by price');
 });
 
@@ -129,7 +129,7 @@ test('save: economy and progression rules', () => {
   assert.equal(isLevelUnlocked(save, 2), false);
   assert.equal(buyVehicle(save, 'desert-pickup'), null, 'cannot buy without coins');
 
-  const win = { reason: 'win' as const, win: true, stars: 2, coins: 60, totalCoins: 90, coinValue: 300, stuntBonus: 0, progress: 1, distance: 800 };
+  const win = { reason: 'win' as const, win: true, stars: 2, coins: 60, totalCoins: 90, coinValue: 300, stuntBonus: 0, stuntScore: 0, flipBonus: 0, frontFlips: 0, backFlips: 0, progress: 1, distance: 800 };
   let r = recordRun(save, 1, win);
   assert.equal(r.reward.bonus, LEVELS[0].bonus);
   assert.equal(r.reward.firstTime, true);

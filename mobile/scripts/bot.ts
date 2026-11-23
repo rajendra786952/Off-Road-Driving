@@ -17,6 +17,11 @@ export function expectedSetup(levelIndex: number) {
 }
 
 const [mode = 'levels', a, b] = process.argv.slice(2);
+
+function nearFeature(level: (typeof LEVELS)[number], x: number): string {
+  const f = getFeatures(level).find((q) => x > q.x0 - 100 && x < q.x1 + 100);
+  return f ? `${f.type}${f.type === 'stunt' ? f.n : ''}@${Math.round(f.a)}` : 'open road';
+}
 let failed = 0;
 
 if (mode === 'cars') {
@@ -47,7 +52,7 @@ if (mode === 'cars') {
     console.log(
       `${r.win ? 'ok  ' : 'FAIL'} L${String(id).padStart(3)} ${level.name.padEnd(18)} ${(level.length / 20).toFixed(0).padStart(5)}m ${setup.car.id.padEnd(14)} ` +
         `${(r.steps / 60).toFixed(0).padStart(4)}s try ${tries} cont ${r.continues} fuel ${r.fuel.toFixed(0).padStart(3)} stars ${r.stars} ` +
-        `${r.win ? '' : `${r.reason} at x=${r.x.toFixed(0)} (${(r.progress * 100).toFixed(0)}%) `}[${kinds}]`,
+        `${r.win ? '' : `${r.reason} at x=${r.x.toFixed(0)} (${(r.progress * 100).toFixed(0)}%) in ${nearFeature(level, r.x)} `}[${kinds}]`,
     );
   }
 }

@@ -11,7 +11,7 @@ for (let id = Number(from); id <= Number(to); id++) {
   let bot = newBot(); const spent = new Map<number, number>();
   const at = (x: number) => w.features.find((f) => f.type !== 'checkpoint' && x > f.x0 - 150 && x < f.x1 + 150);
   for (let i = 0; i < 60 * 600; i++) {
-    const c = botControls(w, bot); w.step(c.gas, c.brake);
+    const c = botControls(w, bot); w.step(c.gas, c.brake, c.front, c.back);
     const f = at(w.vehicle.x); if (f) spent.set(f.id, (spent.get(f.id) ?? 0) + 1);
     if (w.state === 'ending') {
       if (w.endReason === 'win') break;

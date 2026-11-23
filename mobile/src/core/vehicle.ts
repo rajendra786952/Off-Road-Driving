@@ -104,8 +104,20 @@ export class Vehicle {
     return (this.isWheelGrounded(this.rearWheel) ? 1 : 0) + (this.isWheelGrounded(this.frontWheel) ? 1 : 0);
   }
 
+  /**
+   * Hard landings wear the suspension: the springs go soft and floppy as damage
+   * (0..100) builds up, so a battered car bottoms out and wallows more.
+   */
+  setDamage(damage: number): void {
+    const k = 1 - 0.4 * Math.min(1, Math.max(0, damage / 100));
+    for (const c of this.constraints) {
+      c.stiffness = this.stats.stiffness * k;
+      c.damping = this.stats.damping * k;
+    }
+  }
+
   /** Called once per fixed physics step, before the engine update. */
-  applyControls(gas: boolean, brake: boolean, hasFuel: boolean): void {
+  applyControls(gas: boolean, brake: boolean, hasFuel: boolean, slip = 1, flipFront = false, flipBack = false): void {
     const s = this.stats;
     const rearGrounded = this.isWheelGrounded(this.rearWheel);
     const frontGrounded = this.isWheelGrounded(this.frontWheel);
@@ -126,7 +138,7 @@ export class Vehicle {
 
         const ca = this.chassis.angle;
         // Traction: both wheels 100 %, rear only 75 %, front only 35 %
-        const traction = grounded === 2 ? 1.0 : rearGrounded ? 0.75 : 0.35;
+        const traction = (grounded === 2 ? 1.0 : rearGrounded ? 0.75 : 0.35) * slip;
         const driveF = s.driveForce * traction;
         Body.applyForce(this.chassis, this.chassis.position, { x: Math.cos(ca) * driveF, y: Math.sin(ca) * driveF });
       }
@@ -135,7 +147,7 @@ export class Vehicle {
     if (brake) {
       if (vx > 0.8) {
         for (const w of this.wheels) Body.setAngularVelocity(w, w.angularVelocity * s.brakeGrip);
-        Body.setVelocity(this.chassis, { x: vx * 0.985, y: this.chassis.velocity.y });
+        Body.setVelocity(this.chassis, { x: vx * (1 - 0.125 * (1 - s.brakeGrip)), y: this.chassis.velocity.y });
         // weight transfer under braking tilts the nose down
         if (grounded > 0) Body.setAngularVelocity(this.chassis, this.chassis.angularVelocity + s.reaction * 0.65);
       } else if (hasFuel) {
@@ -155,20 +167,56 @@ export class Vehicle {
       }
     }
 
-    // Air control: gas tilts the nose up, brake tilts it down.
+    // Air control (only with all wheels off the ground): gas tilts the nose up, brake
+    // tilts it down. The torque is spread over many steps, so a flip takes real time,
+    // and it is limited by the car's inertia (see computeStats): trucks turn slowly.
     if (grounded === 0) {
       let t = 0;
-      if (gas) t -= s.airTorque;
-      if (brake) t += s.airTorque;
+      // only the two flip buttons turn the car in the air: BACK FLIP lifts the nose, FRONT FLIP drops it
+      // (the gas and brake pedals do nothing up there)
+      if (flipBack) t -= s.airTorque;
+      if (flipFront) t += s.airTorque;
+      let av = this.chassis.angularVelocity;
       if (t !== 0) {
-        const av = Math.max(-s.maxAirSpin, Math.min(s.maxAirSpin, this.chassis.angularVelocity + t));
+        av = Math.max(-s.maxAirSpin, Math.min(s.maxAirSpin, av + t));
         Body.setAngularVelocity(this.chassis, av);
       }
+      if (Math.abs(av) > 0.004) this.spinAsOneBody(av);
     }
 
     this.limit(this.chassis);
     this.limit(this.rearWheel);
     this.limit(this.frontWheel);
+  }
+
+  /**
+   * While the car spins in the air the chassis and both wheels move as one rigid
+   * body about their common centre of mass: each gets the velocity that rotation
+   * gives it. Left alone, the suspension springs fight a fast spin and eat it
+   * (the torque would barely turn the car), and the wheels would swing about.
+   * No momentum is created: only the spin is shared out.
+   */
+  private spinAsOneBody(av: number): void {
+    const bodies = [this.chassis, ...this.wheels];
+    let m = 0;
+    let cx = 0;
+    let cy = 0;
+    let vx = 0;
+    let vy = 0;
+    for (const q of bodies) {
+      m += q.mass;
+      cx += q.mass * q.position.x;
+      cy += q.mass * q.position.y;
+      vx += q.mass * q.velocity.x;
+      vy += q.mass * q.velocity.y;
+    }
+    cx /= m;
+    cy /= m;
+    vx /= m;
+    vy /= m;
+    for (const q of bodies) {
+      Body.setVelocity(q, { x: vx - av * (q.position.y - cy), y: vy + av * (q.position.x - cx) });
+    }
   }
 
   private limit(body: Matter.Body): void {

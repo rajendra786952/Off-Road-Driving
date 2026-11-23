@@ -227,6 +227,8 @@ export function grantLevelAd(save: SaveData, levelId: number): SaveData | null {
 
 export interface Reward {
   coinValue: number;
+  /** Coins for the flips landed, paid at the finish line. */
+  flipBonus: number;
   bonus: number;
   firstTime: boolean;
   total: number;
@@ -241,7 +243,8 @@ export function recordRun(save: SaveData, levelId: number, result: RunResult): {
   const prev = save.levels[levelId];
   const firstTime = !(prev && prev.stars > 0);
   const bonus = result.win ? (firstTime ? level.bonus : Math.round(level.bonus * 0.25)) : 0;
-  const total = result.coinValue + bonus;
+  const flipBonus = result.win ? result.flipBonus : 0;
+  const total = result.coinValue + bonus + flipBonus;
   const levels = { ...save.levels };
   if (result.win) {
     levels[levelId] = { stars: Math.max(prev?.stars ?? 0, result.stars), bestCoins: Math.max(prev?.bestCoins ?? 0, result.coins) };
@@ -260,6 +263,7 @@ export function recordRun(save: SaveData, levelId: number, result: RunResult): {
     },
     reward: {
       coinValue: result.coinValue,
+      flipBonus,
       bonus,
       firstTime,
       total,

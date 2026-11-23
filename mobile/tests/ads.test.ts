@@ -160,7 +160,7 @@ test('extra life: offered once, only after the free continues are used', () => {
   const bot = newBot();
   for (let i = 0; i < 4000 && !w.checkpoint; i++) {
     const c = botControls(w, bot);
-    w.step(c.gas, c.brake);
+    w.step(c.gas, c.brake, c.front, c.back);
   }
   assert.ok(w.checkpoint, 'reached a checkpoint');
   const coins = w.runCoins;

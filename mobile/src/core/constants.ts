@@ -22,4 +22,6 @@ export const FUEL = {
 };
 
 export const COIN_VALUE = 5;
+/** Coins paid at the finish line for every flip landed during the run. */
+export const FLIP_COIN = 30;
 export const MAX_CONTINUES = 3; // checkpoint restarts allowed per run

@@ -14,7 +14,7 @@ for (const id of [1, 17, 33, 48, 60, 77, 91, 100]) {
   let steps = 0;
   for (; steps < 9000; steps++) {
     const c = botControls(w, bot);
-    w.step(c.gas, c.brake);
+    w.step(c.gas, c.brake, c.front, c.back);
     if (w.state === 'ending') {
       if (w.endReason === 'win' || !w.continueFromCheckpoint()) break;
       bot = newBot();

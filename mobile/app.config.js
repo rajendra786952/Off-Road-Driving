@@ -12,7 +12,7 @@
 // 2. Android release build settings: code shrinking (see MINIFY) and the memory
 //    the build itself may use (see BUILD_MEMORY).
 
-const { withGradleProperties } = require('expo/config-plugins');
+const { withAndroidManifest, withGradleProperties } = require('expo/config-plugins');
 
 const SAMPLE_ANDROID_APP_ID = 'ca-app-pub-3940256099942544~3347511713';
 const SAMPLE_IOS_APP_ID = 'ca-app-pub-3940256099942544~1458002511';
@@ -77,6 +77,21 @@ const BUILD_MEMORY = {
   'org.gradle.workers.max': '1',
 };
 
+// The game is locked to landscape, and Android turns that lock into "this app REQUIRES a landscape
+// screen". Google Play then hides the app from devices that do not report one (some tablets,
+// desktops, Play Games on PC, XR) and flags it in Play Console. Declaring the feature as not
+// required keeps the orientation lock and removes the restriction.
+function withOptionalLandscape(config) {
+  return withAndroidManifest(config, (cfg) => {
+    const manifest = cfg.modResults.manifest;
+    const name = 'android.hardware.screen.landscape';
+    const features = (manifest['uses-feature'] || []).filter((f) => f.$['android:name'] !== name);
+    features.push({ $: { 'android:name': name, 'android:required': 'false' } });
+    manifest['uses-feature'] = features;
+    return cfg;
+  });
+}
+
 function withBuildMemory(config) {
   return withGradleProperties(config, (cfg) => {
     for (const [key, value] of Object.entries(BUILD_MEMORY)) {
@@ -114,5 +129,5 @@ module.exports = ({ config }) => {
       },
     },
   ]);
-  return withBuildMemory({ ...config, plugins });
+  return withOptionalLandscape(withBuildMemory({ ...config, plugins }));
 };

@@ -32,7 +32,7 @@ AdMob native code, so the ads layer switches itself off there. To see ads you ne
 
 ```bash
 npm run typecheck          # tsc
-npm test                   # 24 unit tests: levels, cars, terrain, pickups, save rules, physics, ad rules and rewards
+npm test                   # 46 tests: levels, cars, terrain, pickups, save rules, physics, stunts, ad rules and rewards
 npm run bot                # automated driver plays all 100 levels
 npm run bot -- cars        # every one of the 100 cars finishes levels 1 and 20
 npm run bot -- starter     # how far the stock starter jeep gets (all 100)
@@ -40,6 +40,9 @@ npm run gen:icons          # redraw the app icon set in assets/ (scripts/gen-ico
 npx tsx scripts/diag.ts 1 100 mountain-jeep   # time lost and deaths per obstacle type
 npx tsx scripts/trace.ts 42 buggy-2 30 3000 3 # step-by-step trace of one run
 npx tsx scripts/perf.ts                       # cost of one physics step, engine vs game rules
+npx tsx scripts/gas-only.ts                   # does holding the throttle win? (it must not, on the advanced levels)
+npx tsx scripts/lab.ts 1 rally-buggy 1 1 v    # fly one stunt ramp kind (1-7) with a chosen car, step by step
+npx tsx scripts/steep-lab.ts mountain-jeep 330 # a steep descent: smart driver vs throttle only
 npx expo-doctor
 ```
 
@@ -73,8 +76,52 @@ or measure in the APK (Settings -> Show frame rate).
 | Customising | Five upgrades per vehicle (engine, tyres, suspension, brakes, fuel tank; 8 levels each) and seven paint jobs. |
 | Tracks | Roller-coaster terrain: long climbs and sharp plunges layered on rolling hills, with calmer stretches in between (`COASTER_AMP` in `core/terrain.ts`). Obstacle zones are set at the average height of the hills around them so the joins are never a wall. |
 | Obstacles | Fixed rocks, logs, crates, barrels, boulders, ramps, broken road (gaps), seesaws, plank bridges, wrecking balls, moving platforms, mud pits, water, steep hills, cliff drops, falling rocks, rolling boulders. Hazards have a warning sign a little before them. Each is introduced at a set level, then mixed in. |
-| Run rules | Fuel and fuel cans, coins, stars from the share of coins collected, flip / air-time / wheelie bonuses, a bonus per kilometre, checkpoints (continue up to three times per run), finish line. |
+| Stunts | Seven kinds of stunt ramp (see below), real air control, front and back flips counted from the body's actual rotation, landing grades, combo multiplier, damage. From level 6 every level has a jump. |
+| Brake sections | Steep descents (from level 2), jump-then-descent sequences, collapsing bridges (from level 31) and mud that bogs down a spinning wheel: holding the throttle does not finish the advanced levels. |
+| Run rules | Fuel and fuel cans, coins, stars from the share of coins collected, stunt points (paid in coins), a bonus per kilometre, checkpoints (continue up to three times per run, they also repair the car), finish line. |
 | Screens | Home, level select, garage, settings, driving screen with pause / restart / resume and a results panel. |
+
+## Stunts
+
+**Controls.** Two buttons turn the car in the air: BACK FLIP (beside the brake pedal) lifts the nose and FRONT FLIP
+(beside the gas pedal) drops it. They do nothing on the ground, and the gas and brake pedals do nothing in the air. Nothing is scripted: `Vehicle.applyControls` adds spin to the real
+physics body, limited per car by its moment of inertia (heavy cars turn slowly), and the world counts the
+rotation the body actually made (`core/stunts.ts`). A flip takes about 40 to 60 steps of air; gravity keeps
+pulling the whole time. `scripts/spin.ts` shows the spin-up of any car.
+
+**Cars.** Torque comes from `spec.air x AIR_GAIN x agility x sqrt(jeepInertia / carInertia)`
+(`data/vehicles.ts`). Buggies and sports cars turn fastest; the monster truck turns slowly, needs a long
+drop for a flip and has the smallest landing window (`STUNT_STYLE`); the SUV has the widest.
+
+**Landings.** When a car touches down after a jump it is judged 14 steps later on the angle between the car
+and the slope under it, scaled by the car's stability: perfect, good, rough or crash. Only perfect and good
+landings pay in full; a rough one pays 40 %, a crash nothing. Hard landings (normal speed above 11 px per
+step) and rough ones add damage; the suspension goes soft as it builds up and 100 wrecks the car. A
+checkpoint repairs it.
+
+| Stunt | Points |
+|---|---:|
+| Front flip, back flip | 500 |
+| Double flip | 1,200 |
+| Triple flip | 2,200 |
+| Perfect landing (after a flip or half a second of air) | +300 |
+| Front flip and back flip in one chain | +1,500 once |
+| Chain of stunts (each within 6 s of the last) | x1.5, x2 ... up to x4 |
+| Air time over 0.8 s | up to 150 |
+
+Points are paid in coins (10 points per coin) and shown on the driving screen: flip counters, stunt score,
+multiplier, air-time readout, a landing badge and a damage bar (all quiet until the first stunt).
+
+**Ramps** (`core/stuntshape.ts`, placed by `core/features.ts`): 1 large ramp (front flip, from level 6),
+2 steep ramp (back flip, level 8), 3 double ramps (level 21), 6 uneven ramp (level 25), 4 downhill jump
+(level 31), 5 mountain jump (level 35, enough air for double flips), 7 combo: back flip, a pad to brake on,
+front flip (level 39). The road falls away after every lip, which is what buys the air time.
+
+**Braking.** `steep` is a long steep descent into a valley and a steep climb out: the throttle alone arrives
+too fast and takes landing damage, the brake on the way down keeps it safe, and the valley floor is where to
+build speed again. From level 10 a jump, gap, bridge or mud pit is often followed straight away by one.
+`scripts/gas-only.ts` plays levels with the throttle pinned: it wins none of the sampled advanced levels, the
+test driver wins all of them.
 
 ## How it is organised
 
@@ -83,6 +130,8 @@ App.tsx                 shell: loads the save, shows one screen at a time with a
 src/
   core/                 pure TypeScript, no React: runs in Node for tests and the automated driver
     terrain.ts          ground height as a function of x (original rolling hills + carved features)
+    stuntshape.ts       geometry of the stunt ramps and steep descents
+    stunts.ts           air time, flips, landing grade, damage, points and combos (pure maths)
     features.ts         obstacle layout generator (one Feature record per obstacle)
     vehicle.ts          chassis + two sprung wheels (ported from the Phaser game)
     world.ts            one run: physics world, chunk streaming, obstacles, pickups, rules, events
@@ -100,7 +149,7 @@ src/
   screens/              Home, Levels, Garage, Settings, Game
   ui/                   kit.tsx (buttons, bars, screen frame), CarView.tsx
 scripts/                bot.ts, diag.ts, trace.ts, gen-audio.mjs
-tests/core.test.ts
+tests/                  core.test.ts, stunts.test.ts, ads.test.ts, pacing.test.ts
 ```
 
 Adding content needs no new code: a level is a row produced by `build()` in `data/levels.ts`, a vehicle is a

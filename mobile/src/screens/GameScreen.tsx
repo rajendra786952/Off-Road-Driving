@@ -23,6 +23,7 @@ import type { InterstitialTrigger } from '../ads/AdFrequencyManager';
 import { watchAdForReward } from '../ads/rewards';
 import { grantCoins } from '../state/save';
 import { Bar, Btn, C, Coins, Stars, fmt, s as ks } from '../ui/kit';
+import { StuntHud } from './StuntHud';
 
 type Phase = 'playing' | 'paused' | 'result';
 
@@ -48,7 +49,7 @@ interface Perf {
 }
 
 const END_TEXT: Record<string, { title: string; tip: string }> = {
-  crash: { title: 'CRASHED', tip: 'Keep your head off the ground!' },
+  crash: { title: 'CRASHED', tip: 'Line the car up with the ground before you land: BACK FLIP lifts the nose, FRONT FLIP drops it.' },
   fuel: { title: 'OUT OF FUEL', tip: 'Grab fuel cans to keep going!' },
   fell: { title: 'FELL IN', tip: 'Take broken roads at full speed.' },
   hit: { title: 'ROCKFALL', tip: 'Wait for the rocks to land, then drive on.' },
@@ -160,6 +161,27 @@ const Pedal = memo(function Pedal({ label, value, side, faint }: { label: string
   );
 });
 
+// ------------------------------------------------------------------ flip buttons
+const FLIP_BTN_W = 100;
+/** Distance from the screen edge to the flip button: the pedal (22 + 132) and a gap. */
+const FLIP_EDGE = 164;
+/** Rotates the car while it is in the air (front: nose down, back: nose up). Does nothing on the ground. */
+const FlipButton = memo(function FlipButton({ label, value, side }: { label: string; value: Animated.Value; side: 'left' | 'right' }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        st.flipBtn,
+        side === 'left' ? { left: insets.left + FLIP_EDGE } : { right: insets.right + FLIP_EDGE },
+        { bottom: insets.bottom + 18, opacity: value.interpolate({ inputRange: [0, 1], outputRange: [0.62, 1] }), transform: [{ scale: value.interpolate({ inputRange: [0, 1], outputRange: [1, 0.92] }) }] },
+      ]}
+    >
+      <Text style={st.flipBtnText}>{label}</Text>
+    </Animated.View>
+  );
+});
+
 // ------------------------------------------------------------------ screen
 export default function GameScreen({ levelId }: { levelId: number }) {
   const level = getLevel(levelId);
@@ -172,7 +194,9 @@ export default function GameScreen({ levelId }: { levelId: number }) {
   const pacerRef = useRef<FramePacer | null>(null);
   // starts from the window size so the first frame can be drawn before layout reports back
   const size = useRef({ w: Dimensions.get('window').width, h: Dimensions.get('window').height });
-  const controls = useRef({ gas: false, brake: false, keyGas: false, keyBrake: false });
+  const controls = useRef({ gas: false, brake: false, keyGas: false, keyBrake: false, front: false, back: false });
+  const frontAnim = useRef(new Animated.Value(0)).current;
+  const backAnim = useRef(new Animated.Value(0)).current;
   const phaseRef = useRef<Phase>('playing');
   const committed = useRef(false);
   const toast = useRef<ToastHandle>(null);
@@ -214,7 +238,21 @@ export default function GameScreen({ levelId }: { levelId: number }) {
       switch (e.type) {
         case 'coin': play('coin', 55); break;
         case 'fuel': play('fuel'); toast.current?.show('+25 FUEL'); break;
-        case 'stunt': play('stunt'); toast.current?.show(e.text); break;
+        case 'stunt':
+          if (e.grade === 'rough' || e.grade === 'crash') {
+            play('smash', 90);
+            buzz('heavy');
+            toast.current?.show(e.text, e.grade === 'crash' ? '#ff6b5a' : '#ffb04a');
+          } else {
+            play('stunt');
+            if (e.grade === 'perfect') play('checkpoint', 120);
+            if ((e.multiplier ?? 1) >= 2) play('win', 400);
+            if (e.points) buzz('light');
+            toast.current?.show(e.text, e.grade === 'perfect' ? C.gold : C.greenHi);
+          }
+          break;
+        case 'damage': if (e.added > 0) buzz('heavy'); break;
+        case 'repair': toast.current?.show('CAR REPAIRED', C.greenHi); break;
         case 'km': play('win'); toast.current?.show(`${e.km} KM! +${e.coins}`, C.gold); break;
         case 'checkpoint': play('checkpoint'); buzz('light'); toast.current?.show('CHECKPOINT', C.gold); break;
         case 'land': play('land', 200); if (e.intensity > 0.45) buzz('light'); break;
@@ -251,7 +289,7 @@ export default function GameScreen({ levelId }: { levelId: number }) {
         drive(n: number) {
           for (let i = 0; i < n && world.state === 'playing'; i++) {
             const c = botControls(world, devBot);
-            world.step(c.gas, c.brake);
+            world.step(c.gas, c.brake, c.front, c.back);
           }
         },
         snapshot(w = 960, h = 540, t = 0): string | undefined {
@@ -315,7 +353,7 @@ export default function GameScreen({ levelId }: { levelId: number }) {
       let steps = 0;
       const t0 = performance.now();
       while (acc >= PHYSICS_STEP && steps < MAX_STEPS_PER_FRAME) {
-        world.step(gas, brake);
+        world.step(gas, brake, c.front, c.back);
         acc -= PHYSICS_STEP;
         steps++;
       }
@@ -420,7 +458,7 @@ export default function GameScreen({ levelId }: { levelId: number }) {
   // ---------------------------------------------------------------- pause / resume / back
   const pause = useCallback(() => {
     if (phaseRef.current !== 'playing' || worldRef.current?.state !== 'playing') return;
-    controls.current.gas = controls.current.brake = false;
+    controls.current.gas = controls.current.brake = controls.current.front = controls.current.back = false;
     gasAnim.setValue(0);
     brakeAnim.setValue(0);
     stopEngine();
@@ -489,8 +527,15 @@ export default function GameScreen({ levelId }: { levelId: number }) {
       const { w, h } = size.current;
       let gas = false;
       let brake = false;
+      let front = false;
+      let back = false;
       for (const t of e.nativeEvent.touches) {
-        if (split) {
+        // BACK FLIP sits beside the brake pedal, FRONT FLIP beside the gas pedal
+        const inBack = t.pageX > insets.left + FLIP_EDGE - 6 && t.pageX < insets.left + FLIP_EDGE + FLIP_BTN_W + 6;
+        const inFront = t.pageX < w - insets.right - FLIP_EDGE + 6 && t.pageX > w - insets.right - FLIP_EDGE - FLIP_BTN_W - 6;
+        if (t.pageY > h * 0.45 && inBack) back = true;
+        else if (t.pageY > h * 0.45 && inFront) front = true;
+        else if (split) {
           if (t.pageX < w / 2) brake = true;
           else gas = true;
         } else if (t.pageY > h * 0.3) {
@@ -499,13 +544,17 @@ export default function GameScreen({ levelId }: { levelId: number }) {
         }
       }
       const c = controls.current;
-      if (phaseRef.current !== 'playing') gas = brake = false;
+      if (phaseRef.current !== 'playing') gas = brake = front = back = false;
+      if (c.front !== front) frontAnim.setValue(front ? 1 : 0);
+      if (c.back !== back) backAnim.setValue(back ? 1 : 0);
+      c.front = front;
+      c.back = back;
       if (c.gas !== gas) gasAnim.setValue(gas ? 1 : 0);
       if (c.brake !== brake) brakeAnim.setValue(brake ? 1 : 0);
       c.gas = gas;
       c.brake = brake;
     },
-    [brakeAnim, gasAnim, split],
+    [brakeAnim, gasAnim, frontAnim, backAnim, split, insets.left, insets.right],
   );
 
   const mouse =
@@ -542,9 +591,12 @@ export default function GameScreen({ levelId }: { levelId: number }) {
       <View collapsable={false} style={StyleSheet.absoluteFill} onTouchStart={onTouch} onTouchMove={onTouch} onTouchEnd={onTouch} onTouchCancel={onTouch} {...(mouse as object)} />
 
       <HudView worldRef={worldRef} perfRef={perfRef} title={`${level.id}. ${level.name}`} showFps={settings.showFps} />
+      <StuntHud worldRef={worldRef} />
       <Toast ref={toast} />
       <Pedal label="BRAKE" value={brakeAnim} side="left" faint={split} />
       <Pedal label="GAS" value={gasAnim} side="right" faint={split} />
+      <FlipButton label="BACK FLIP" value={backAnim} side="left" />
+      <FlipButton label="FRONT FLIP" value={frontAnim} side="right" />
 
       <Pressable accessibilityRole="button" accessibilityLabel="Pause" onPress={pause} hitSlop={8} style={[st.pause, { top: insets.top + 8, right: insets.right + 12 }]}>
         <View style={st.pauseBar} />
@@ -567,6 +619,14 @@ export default function GameScreen({ levelId }: { levelId: number }) {
           <Text style={st.line}>
             Coins: {o.result.coins} / {o.result.totalCoins}   (+{fmt(o.reward.coinValue)})
           </Text>
+          {o.reward.flipBonus > 0 ? (
+            <Text style={[st.line, { color: C.gold }]}>Flip bonus: +{fmt(o.reward.flipBonus)} coins ({o.result.frontFlips + o.result.backFlips} flips)</Text>
+          ) : null}
+          {o.result.stuntScore > 0 ? (
+            <Text style={[st.line, { color: C.gold }]}>
+              Stunt score {fmt(o.result.stuntScore)} (front flips {o.result.frontFlips}, back flips {o.result.backFlips})
+            </Text>
+          ) : null}
           {o.result.stuntBonus > 0 ? <Text style={[st.line, { color: C.greenHi }]}>Stunts and checkpoints: +{fmt(o.result.stuntBonus)} (included)</Text> : null}
           {o.result.win ? <Text style={[st.line, { color: C.greenHi }]}>{o.reward.firstTime ? 'Level bonus' : 'Replay bonus'}: +{fmt(o.reward.bonus)}</Text> : null}
           <Text style={st.total}>{o.result.win ? 'Total earned' : 'Coins kept'}: +{fmt(o.reward.total)}</Text>
@@ -638,6 +698,8 @@ const st = StyleSheet.create({
   progress: { flexDirection: 'row', width: '70%', maxWidth: 320, marginVertical: 4, borderWidth: 2, borderColor: 'rgba(14,26,34,0.85)', borderRadius: 6 },
   toast: { position: 'absolute', top: '24%', left: 0, right: 0, alignItems: 'center' },
   toastText: { fontSize: 22, fontWeight: '900', textShadowColor: '#000', textShadowRadius: 5, textShadowOffset: { width: 0, height: 1 } },
+  flipBtn: { position: 'absolute', width: FLIP_BTN_W, height: 92, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: '#7a4fd6', borderWidth: 3, borderColor: 'rgba(255,255,255,0.5)' },
+  flipBtnText: { color: '#fff', fontSize: 12, fontWeight: '900', textAlign: 'center', paddingHorizontal: 4 },
   pedal: { position: 'absolute', width: 132, height: 92, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 3, borderColor: 'rgba(255,255,255,0.5)' },
   pedalText: { color: '#ffffff', fontSize: 21, fontWeight: '900', letterSpacing: 1 },
   pause: { position: 'absolute', width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(14,26,34,0.7)', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },

@@ -4,6 +4,7 @@
 // driver all sample the same function.
 import { hashFloat } from './rng';
 import type { Feature } from './features';
+import { landingDropAt, landingRipple, steepDelta, stuntDelta } from './stuntshape';
 
 export const SEGMENT = 40; // horizontal spacing of terrain sample points (px)
 export const BASE_Y = 400; // world y of flat ground
@@ -31,7 +32,7 @@ export function smoothstep(a: number, b: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-const FLATTENING = new Set(['ramp', 'gap', 'bridge', 'platform', 'mud', 'water', 'hill', 'seesaw', 'pendulum']);
+const FLATTENING = new Set(['ramp', 'stunt', 'steep', 'gap', 'bridge', 'platform', 'mud', 'water', 'hill', 'seesaw', 'pendulum']);
 
 /** Size of the roller-coaster dips, in px, before the level's hill factor. */
 export const COASTER_AMP = 74;
@@ -44,6 +45,7 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
   const p4 = hashFloat(seed, 4) * Math.PI * 2;
 
   const drops = features.filter((f) => f.type === 'drop');
+  const stunts = features.filter((f) => f.type === 'stunt');
   const flats = features.filter((f) => FLATTENING.has(f.type));
 
   const p5 = hashFloat(seed, 5) * Math.PI * 2;
@@ -78,6 +80,7 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
 
     y = BASE_Y + y * smoothstep(0, 900, x); // flat, safe start zone
     for (const d of drops) if (x > d.a) y += d.h * smoothstep(d.a, d.b, x);
+    for (const s of stunts) if (x > s.b) y += landingDropAt(s, x);
     return y;
   }
 
@@ -86,6 +89,10 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
     switch (f.type) {
       case 'ramp':
         return x >= f.a && x < f.b ? -f.h * Math.pow((x - f.a) / (f.b - f.a), 1.4) : 0;
+      case 'stunt':
+        return stuntDelta(f, x);
+      case 'steep':
+        return steepDelta(f, x);
       case 'gap': {
         if (x <= f.a) return -f.h * Math.min(1, Math.max(0, (x - (f.a - 200)) / 200)); // take-off lip
         if (x < f.b) return CHASM_DEPTH;
@@ -119,7 +126,8 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
     const lean = (y1 - y0) / (f.x1 - f.x0);
     road.set(f.id, {
       mid: (f.x0 + f.x1) / 2,
-      level: (y0 + y1) / 2,
+      // a stunt keeps the level it starts at; after the lip the road eases into the terrain below
+      level: f.type === 'stunt' ? y0 : (y0 + y1) / 2,
       slope: TILTING.has(f.type) ? Math.max(-MAX_TILT, Math.min(MAX_TILT, lean)) : 0,
     });
   }
@@ -129,8 +137,12 @@ export function createTerrainProfile(cfg: TerrainConfig, features: Feature[] = [
     for (const f of flats) {
       if (x <= f.x0 || x >= f.x1) continue;
       const r = road.get(f.id)!;
-      const w = smoothstep(f.x0, f.x0 + BLEND, x) * (1 - smoothstep(f.x1 - BLEND, f.x1, x));
+      const w =
+        f.type === 'stunt'
+          ? smoothstep(f.x0, f.x0 + BLEND, x) * (1 - smoothstep(f.b, f.b + 500, x))
+          : smoothstep(f.x0, f.x0 + BLEND, x) * (1 - smoothstep(f.x1 - BLEND, f.x1, x));
       y = y + (r.level + r.slope * (x - r.mid) + delta(f, x) - y) * w;
+      if (f.type === 'stunt') y += landingRipple(f, x);
       break; // zones never overlap
     }
     return y;

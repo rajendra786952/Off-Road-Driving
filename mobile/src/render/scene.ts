@@ -104,6 +104,15 @@ export class SceneRenderer {
       case 'land':
         this.shake = Math.max(this.shake, e.intensity * 7);
         break;
+      case 'stunt':
+        if (e.points) {
+          const p = this.world.vehicle.chassis.position;
+          this.emit(p.x, p.y - 20, e.grade === 'perfect' ? 22 : 12, { color: e.grade === 'perfect' ? '#ffd23f' : '#8dff9b', speed: 3.4, life: 650, size: 4, grav: 0.1 });
+        }
+        break;
+      case 'damage':
+        if (e.added > 0) this.shake = Math.max(this.shake, 6 + e.added * 0.15);
+        break;
       case 'end':
         if (e.reason !== 'win') {
           this.shake = 12;

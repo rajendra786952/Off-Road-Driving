@@ -4,12 +4,13 @@
 // automated test driver.
 import Matter from 'matter-js';
 import {
-  CHUNK_SIZE, COIN_VALUE, FUEL, GRAVITY_Y, MAX_CONTINUES, PHYSICS_STEP, PX_PER_METER, SPAWN_X, TERRAIN_THICKNESS,
+  CHUNK_SIZE, COIN_VALUE, FUEL, GRAVITY_Y, MAX_CONTINUES, PHYSICS_STEP, PX_PER_METER, SPAWN_X, TERRAIN_THICKNESS, FLIP_COIN,
 } from './constants';
 import { createTerrainProfile, SEGMENT, BASE_Y, type TerrainProfile } from './terrain';
 import { CELL, countCoins, pickupsForCell } from './pickups';
 import type { Feature } from './features';
 import { Vehicle, wrapAngle } from './vehicle';
+import { StuntTracker, WRECK_DAMAGE, type Grade, type Landing } from './stunts';
 import { getFeatures, starsForRatio, type LevelConfig } from '../data/levels';
 import { THEMES, type Theme } from '../data/themes';
 import type { Upgrades, VehicleSpec } from '../data/vehicles';
@@ -20,11 +21,13 @@ const CAT_TERRAIN = 0x0002;
 const CAT_PLANK = 0x0004;
 const PLANK_T = 12;
 const PLATFORM_T = 30;
+/** Speed (px per step) above which a steep descent damages the car. */
+export const STEEP_SPEED_LIMIT = 11.5;
 export const FALL_WARNING = 700; // rocks start falling when the car is this far away
 export const ROCK_BURY = 0.78; // how much of a fixed rock's radius sits below ground
 const STEP_S = PHYSICS_STEP / 1000;
 /** Features without bodies of their own. */
-const PASSIVE = new Set<Feature['type']>(['checkpoint', 'hill', 'drop', 'ramp', 'gap', 'mud', 'water']);
+const PASSIVE = new Set<Feature['type']>(['checkpoint', 'hill', 'drop', 'ramp', 'stunt', 'steep', 'gap', 'mud', 'water']);
 const PICKUP_R2 = 38 * 38;
 
 export type EndReason = 'win' | 'crash' | 'fuel' | 'fell' | 'hit';
@@ -32,7 +35,9 @@ export type EndReason = 'win' | 'crash' | 'fuel' | 'fell' | 'hit';
 export type GameEvent =
   | { type: 'coin'; x: number; y: number }
   | { type: 'fuel'; x: number; y: number }
-  | { type: 'stunt'; text: string }
+  | { type: 'stunt'; text: string; points?: number; grade?: Grade; multiplier?: number }
+  | { type: 'damage'; value: number; added: number }
+  | { type: 'repair' }
   | { type: 'checkpoint'; n: number }
   | { type: 'km'; km: number; coins: number }
   | { type: 'land'; intensity: number }
@@ -87,6 +92,10 @@ interface Live {
   ball: Matter.Body | null;
   rimY: number;
   triggered: boolean;
+  /** Steps a collapsing bridge has carried a slow car; it starts to give way after a moment. */
+  dwell: number;
+  /** Planks of a collapsing bridge already dropped. */
+  fallen: number;
 }
 
 export interface RunResult {
@@ -97,6 +106,12 @@ export interface RunResult {
   totalCoins: number;
   coinValue: number;
   stuntBonus: number;
+  /** Stunt points scored (flips, landings, combos). */
+  stuntScore: number;
+  /** Coins for the flips landed, paid only when the track is finished. */
+  flipBonus: number;
+  frontFlips: number;
+  backFlips: number;
   progress: number;
   distance: number;
 }
@@ -145,12 +160,13 @@ export class GameWorld {
   /** Checkpoints already driven through (feature ids). */
   passed = new Set<number>();
   private chasms: Feature[];
+  private steeps: Feature[];
+  private overspeed = 0;
   private liquids: Feature[];
   private wall: Matter.Body;
 
-  private airTime = 0;
-  private airRotation = 0;
-  private lastAirAngle: number | null = null;
+  /** Flips, landings, combo and damage for this run (see core/stunts.ts). */
+  readonly stunts = new StuntTracker();
   private wheelieTime = 0;
   private fuelWarn = 0;
   private lastKm = 0;
@@ -160,10 +176,11 @@ export class GameWorld {
   private stuckX = 0;
   private stuckY = 0;
 
-  constructor(level: LevelConfig, spec: VehicleSpec, upgrades: Partial<Upgrades>, emit: (e: GameEvent) => void = () => {}) {
+  /** `features` replaces the level's generated obstacles (tests and the stunt lab). */
+  constructor(level: LevelConfig, spec: VehicleSpec, upgrades: Partial<Upgrades>, emit: (e: GameEvent) => void = () => {}, features?: Feature[]) {
     this.level = level;
     this.theme = THEMES[level.theme];
-    this.features = getFeatures(level);
+    this.features = features ?? getFeatures(level);
     this.profile = createTerrainProfile(level.terrain, this.features);
     this.finishX = level.length;
     this.totalCoins = countCoins(level.pickups, level.length);
@@ -171,6 +188,7 @@ export class GameWorld {
     this.upgrades = upgrades;
     this.emit = emit;
     this.chasms = this.features.filter((f) => f.type === 'gap' || f.type === 'bridge' || f.type === 'platform');
+    this.steeps = this.features.filter((f) => f.type === 'steep');
     this.liquids = this.features.filter((f) => f.type === 'mud' || f.type === 'water');
     this.dynamic = this.features.filter((f) => !PASSIVE.has(f.type));
     this.checkpoints = this.features.filter((f) => f.type === 'checkpoint');
@@ -242,6 +260,10 @@ export class GameWorld {
       totalCoins: this.totalCoins,
       coinValue: Math.round(this.runCoins * COIN_VALUE),
       stuntBonus: this.stuntBonusCoins,
+      stuntScore: this.stunts.points,
+      flipBonus: win ? (this.stunts.frontFlips + this.stunts.backFlips) * FLIP_COIN : 0,
+      frontFlips: this.stunts.frontFlips,
+      backFlips: this.stunts.backFlips,
       progress: this.progress,
       distance: Math.floor(this.distance),
     };
@@ -283,8 +305,10 @@ export class GameWorld {
     this.fuel = Math.max(this.checkpoint.fuel, this.fuelMax * 0.4);
     this.state = 'playing';
     this.endReason = null;
-    this.airTime = this.airRotation = this.wheelieTime = this.flipTime = this.stuckTime = this.tipTime = 0;
-    this.lastAirAngle = null;
+    this.wheelieTime = this.flipTime = this.stuckTime = this.tipTime = 0;
+    this.stunts.reset();
+    this.stunts.repair(0); // the pit crew at the checkpoint fixes the car
+    this.vehicle.setDamage(0);
     this.inLiquid = null;
     this.spawn(this.checkpoint.x);
   }
@@ -394,6 +418,7 @@ export class GameWorld {
           this.addProp(lv, { kind: 'fallrock', body, fid: f.id, r, w: 0, h: 0, variant: i });
         }
       }
+      if (f.type === 'bridge' && f.n === 1 && lv.planks.length) this.collapseBridge(lv);
       if (lv.seesaw) {
         // the ends stop at road level
         const s = lv.seesaw;
@@ -430,6 +455,29 @@ export class GameWorld {
     }
   }
 
+  /**
+   * A collapsing bridge holds a car that keeps moving. Stop on it, or crawl, and
+   * the planks under the car let go one after another (cross it at speed).
+   */
+  private collapseBridge(lv: Live): void {
+    const f = lv.f;
+    const v = this.vehicle;
+    if (v.x > f.a && v.x < f.b && Math.abs(v.chassis.velocity.x) < 5) lv.dwell++;
+    else if (lv.dwell > 0 && lv.dwell < 40) lv.dwell = Math.max(0, lv.dwell - 2);
+    if (lv.dwell < 40 || this.tick % 5 !== 0) return;
+    const pw = (f.b - f.a) / lv.planks.length;
+    const centre = Math.min(lv.planks.length - 1, Math.max(0, Math.floor((v.x - f.a) / pw)));
+    const world = this.engine.world;
+    for (const i of [centre, centre + 1, centre - 1]) {
+      const left = lv.constraints[i];
+      const right = lv.constraints[i + 1];
+      if (i < 0 || i >= lv.planks.length || !left) continue;
+      Composite.remove(world, left as never);
+      if (right) Composite.remove(world, right as never);
+      lv.fallen++;
+    }
+  }
+
   private addProp(lv: Live, prop: Prop): void {
     lv.bodies.push(prop.body);
     this.props.push(prop);
@@ -453,7 +501,7 @@ export class GameWorld {
   }
 
   private activate(f: Feature): void {
-    const lv: Live = { f, half: 0, bodies: [], constraints: [], planks: [], platform: null, seesaw: null, ball: null, rimY: this.profile.surfaceY(f.a), triggered: false };
+    const lv: Live = { f, half: 0, bodies: [], constraints: [], planks: [], platform: null, seesaw: null, ball: null, rimY: this.profile.surfaceY(f.a), triggered: false, dwell: 0, fallen: 0 };
     this.live.set(f.id, lv);
     this.liveList.push(lv);
     const sy = this.profile.surfaceY;
@@ -621,18 +669,43 @@ export class GameWorld {
     this.inLiquid = kind;
   }
 
+  /** Once the run is won the car coasts to a halt and stays put (no rolling back down a slope). */
+  private holdAtFinish(): void {
+    const v = this.vehicle;
+    const vx = v.chassis.velocity.x;
+    if (vx > 0.8) return;
+    for (const w of v.wheels) {
+      Body.setAngularVelocity(w, Math.max(0, w.angularVelocity) * 0.6);
+      if (w.velocity.x < 0) Body.setVelocity(w, { x: 0, y: w.velocity.y });
+    }
+    Body.setVelocity(v.chassis, { x: Math.max(0, vx) * 0.8, y: v.chassis.velocity.y });
+  }
+
+  /**
+   * Traction left in mud. Mashing the throttle at a crawl spins the wheels faster
+   * than the ground moves and they dig in: feather the gas and keep momentum.
+   */
+  private mudSlip(gas: boolean): number {
+    if (!gas || this.inLiquid !== 'mud') return 1;
+    const v = this.vehicle;
+    const spin = v.rearWheel.angularVelocity * v.spec.wheel.r - v.chassis.velocity.x;
+    return spin > 3 ? Math.max(0.25, 1 - (spin - 3) * 0.12) : 1;
+  }
+
   // ------------------------------------------------------------------ main step
   /** Advance the simulation by one fixed 60 Hz step. */
-  step(gasInput: boolean, brakeInput: boolean): void {
+  step(gasInput: boolean, brakeInput: boolean, flipFront = false, flipBack = false): void {
     const playing = this.state === 'playing';
     const won = this.endReason === 'win';
     const gas = playing && gasInput;
-    const brake = (playing && brakeInput) || won;
+    // after the finish line the car brakes to a stop; it never reverses
+    const brake = (playing && brakeInput) || (won && this.vehicle.chassis.velocity.x > 0.8);
     const hasFuel = this.fuel > 0;
     const v = this.vehicle;
 
     this.updateFeatures();
-    v.applyControls(gas, brake, hasFuel);
+    if (won) this.holdAtFinish();
+    v.applyControls(gas, brake, hasFuel, this.mudSlip(gas), playing && flipFront, playing && flipBack);
     this.applyLiquids();
     Engine.update(this.engine, PHYSICS_STEP);
     this.unstickWheels();
@@ -763,6 +836,12 @@ export class GameWorld {
       this.passed.add(f.id);
       this.checkpoint = { x: f.a, fuel: this.fuel, n: f.n };
       this.emit({ type: 'checkpoint', n: f.n });
+      if (this.stunts.damage > 0) {
+        this.stunts.repair(0);
+        this.vehicle.setDamage(0);
+        this.emit({ type: 'repair' });
+        this.emit({ type: 'damage', value: 0, added: 0 });
+      }
     }
   }
 
@@ -771,41 +850,36 @@ export class GameWorld {
     this.stuntBonusCoins += coins;
   }
 
+  /** Slope angle of the ground under the car (positive = downhill to the right). */
+  private slopeAt(x: number): number {
+    return Math.atan2(this.groundY(x + 40) - this.groundY(x - 40), 80);
+  }
+
   private updateStunts(): void {
     const v = this.vehicle;
     const rearGrounded = v.isWheelGrounded(v.rearWheel);
     const frontGrounded = v.isWheelGrounded(v.frontWheel);
+    const wasAir = this.stunts.airSteps;
 
-    if (!rearGrounded && !frontGrounded) {
-      this.airTime += STEP_S;
-      const a = v.chassis.angle;
-      if (this.lastAirAngle !== null) this.airRotation += wrapAngle(a - this.lastAirAngle);
-      this.lastAirAngle = a;
-      return;
-    }
-
-    if (this.airTime > 0.18) {
+    const landing = this.stunts.update({
+      angle: v.chassis.angle,
+      slope: this.slopeAt(v.x),
+      vx: v.chassis.velocity.x,
+      vy: v.chassis.velocity.y,
+      rearGrounded,
+      frontGrounded,
+      stability: v.stats.stability,
+      harsh: v.stats.harsh,
+    });
+    if (wasAir >= 15 && this.stunts.airSteps === 0) {
+      // first touchdown after a real jump
       const vy = v.chassis.velocity.y;
       if (vy > 3.5) {
         this.emit({ type: 'land', intensity: Math.min(1, vy / 16) });
         for (const w of v.wheels) this.emit({ type: 'dust', x: w.position.x, y: w.position.y + v.spec.wheel.r, n: 3 });
       }
-      const flips = Math.round(this.airRotation / (Math.PI * 2));
-      if (flips !== 0) {
-        const count = Math.abs(flips);
-        const earned = count * 50;
-        this.bonus(earned);
-        // same naming as the original game: positive rotation is called a backflip
-        this.emit({ type: 'stunt', text: `${flips > 0 ? 'BACKFLIP' : 'FRONTFLIP'} x${count}! +${earned}` });
-      } else if (this.airTime >= 1.4) {
-        const earned = Math.min(40, Math.floor(this.airTime * 12));
-        this.bonus(earned);
-        this.emit({ type: 'stunt', text: `AIR TIME ${this.airTime.toFixed(1)}s +${earned}` });
-      }
     }
-    this.airTime = 0;
-    this.airRotation = 0;
-    this.lastAirAngle = null;
+    if (landing) this.onLanding(landing);
 
     if (rearGrounded && !frontGrounded && v.chassis.velocity.x > 3 && this.fuel > 0) {
       const before = this.wheelieTime;
@@ -819,8 +893,51 @@ export class GameWorld {
     }
   }
 
+  private onLanding(l: Landing): void {
+    const total = l.points + l.perfectBonus + l.comboBonus;
+    if (total > 0) this.bonus(Math.round(total / 10));
+    if (l.damage > 0) {
+      this.vehicle.setDamage(this.stunts.damage);
+      this.emit({ type: 'damage', value: this.stunts.damage, added: l.damage });
+    }
+    if (total > 0) {
+      const mult = l.multiplier > 1 && l.flips > 0 ? ` x${l.multiplier}` : '';
+      this.emit({ type: 'stunt', text: `${l.text}${mult} +${total}`, points: total, grade: l.grade, multiplier: l.multiplier });
+    } else if (l.grade === 'rough' || l.grade === 'crash') {
+      this.emit({ type: 'stunt', text: l.grade === 'crash' ? 'BAD LANDING!' : 'ROUGH LANDING', points: 0, grade: l.grade });
+    }
+    if (this.stunts.damage >= WRECK_DAMAGE) this.endRun('crash');
+  }
+
+  /**
+   * Going down a steep descent faster than the brakes and springs can hold wears the
+   * car out: damage builds while the speed is over the limit (let off the gas and brake).
+   */
+  private steepSpeedLimit(): void {
+    const v = this.vehicle;
+    let inside = false;
+    for (const f of this.steeps) {
+      if (v.x > f.a - 40 && v.x < f.a + f.n + 80) {
+        inside = true;
+        break;
+      }
+    }
+    if (!inside || v.chassis.velocity.x <= STEEP_SPEED_LIMIT) {
+      this.overspeed = 0;
+      return;
+    }
+    if (this.overspeed++ === 0) this.emit({ type: 'stunt', text: 'TOO FAST! BRAKE!', points: 0, grade: 'rough' });
+    this.stunts.damage = Math.min(WRECK_DAMAGE, this.stunts.damage + 1.5 * v.stats.harsh);
+    if (this.tick % 10 === 0) {
+      v.setDamage(this.stunts.damage);
+      this.emit({ type: 'damage', value: Math.round(this.stunts.damage), added: 0 });
+    }
+    if (this.stunts.damage >= WRECK_DAMAGE) this.endRun('crash');
+  }
+
   private gameLogic(gas: boolean): void {
     const v = this.vehicle;
+    this.steepSpeedLimit();
     this.distance = Math.max(this.distance, (v.x - SPAWN_X) / PX_PER_METER);
     this.updateStunts();
 

@@ -14,7 +14,7 @@ const w = new GameWorld(level, getVehicle(carId), u > 1 ? { engine: u, tires: u,
 const bot = newBot();
 for (let i = 0; i < Number(max); i++) {
   const c = botControls(w, bot);
-  w.step(c.gas, c.brake);
+  w.step(c.gas, c.brake, c.front, c.back);
   const v = w.vehicle;
   if (i % Number(every) === 0) {
     console.log(

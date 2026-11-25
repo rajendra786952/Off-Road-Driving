@@ -1,0 +1,46 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "trail-torque",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 5173
+    },
+    {
+      "name": "mobile-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "mobile",
+        "run",
+        "web",
+        "--",
+        "--port",
+        "8090",
+        "--max-workers",
+        "1"
+      ],
+      "port": 8090
+    },
+    {
+      "name": "mobile3d-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "mobile3d",
+        "run",
+        "web",
+        "--",
+        "--port",
+        "8091",
+        "--max-workers",
+        "1"
+      ],
+      "port": 8091
+    }
+  ]
+}

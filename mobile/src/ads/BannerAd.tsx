@@ -9,13 +9,15 @@ import { adUnitId } from './AdConfig';
 import { gma } from './native';
 import { describeAdError, setAdsStatus } from './diagnostics';
 import { useBannersAllowed } from './AdMobManager';
+import { SimBanner } from './simAd';
 
 export const BannerAd = memo(function BannerAd() {
   const allowed = useBannersAllowed();
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const lib = allowed && !failed ? gma() : null;
-  if (!lib) return null; // also covers builds without the AdMob native module (Expo Go)
+  // Expo Go / a build without the AdMob native module: a placeholder in development, nothing in release
+  if (!lib) return __DEV__ && allowed ? <SimBanner /> : null;
   const SdkBanner = lib.BannerAd;
   return (
     <View accessibilityLabel="Advertisement" style={{ alignItems: 'center' }}>

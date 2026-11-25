@@ -8,7 +8,13 @@ All ad code lives in `src/ads/`; screens never call the SDK directly.
 > simulated ads. It has **not yet run on a phone**: no APK could be built on the development machine (the
 > drive was full). The first device build is the real test of the SDK calls. See "First device build" below.
 
-## Expo Go shows no ads
+## Local development shows simulated ads
+
+In a development run (`npm run web`, Expo Go) a banner placeholder appears on the menu screens, and the
+interstitial and rewarded ads are drawn as a full-screen "simulated ad" with a 3 second wait (`src/ads/simAd.tsx`).
+Release builds never show these. Real Google ads only appear in a build of the app (see below).
+
+## Expo Go has no real ads
 
 AdMob needs native code that exists only in a build of this app. Expo Go, and any build made before the
 library was added, do not have it. The game detects that (`src/ads/native.ts`) and runs normally with the

@@ -9,6 +9,11 @@ export async function initSdk(): Promise<boolean> {
   const lib = gma();
   if (!lib) {
     // Expo Go, or a build without the AdMob native code: no ads, the game still runs
+    if (__DEV__) {
+      // development: simulated ads, so the layout and reward flow can be seen in Expo Go
+      setAdsStatus({ native: 'no (Expo Go or an old build)', sdk: 'simulated ads (development)', banner: 'placeholder', interstitial: 'simulated', rewarded: 'simulated' });
+      return true;
+    }
     setAdsStatus({ native: 'no (Expo Go or an old build): ads are off', sdk: 'off' });
     return false;
   }

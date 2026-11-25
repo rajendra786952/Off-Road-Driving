@@ -10,6 +10,7 @@ import { goBack, loadSave, getState, useStore } from './src/state/store';
 import { installDevHooks } from './src/dev/hooks';
 import { initAudio, setAudioActive } from './src/audio/sound';
 import { AdMobManager } from './src/ads/AdMobManager';
+import { SimAdOverlay } from './src/ads/simAd';
 import { NoticeHost } from './src/ui/notice';
 import { C, Transition } from './src/ui/kit';
 import HomeScreen from './src/screens/HomeScreen';
@@ -60,6 +61,7 @@ export default function App() {
         <StatusBar hidden />
         <Transition id={key}>{screen}</Transition>
         <NoticeHost />
+        {__DEV__ ? <SimAdOverlay /> : null}
       </View>
     </SafeAreaProvider>
   );

@@ -1,4 +1,4 @@
-// Draws the app icon set (a 4x4 truck climbing at sunset, with a "4x4" badge)
+// Draws the app icon set (the game's green jeep climbing in the Red Canyon, with a "4x4" badge)
 // and writes the PNG files into assets/. No image library: a small supersampled
 // rasteriser and a PNG encoder on top of zlib.  Run:  node scripts/gen-icons.mjs
 import fs from 'node:fs';
@@ -62,34 +62,45 @@ const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), pa
 
 // ---------------------------------------------------------------- artwork
 function truck(mono) {
+  // the game's starter jeep: green open body, roll cage, helmeted driver, spare wheel, knobbly tyres
   const c = (h) => (mono ? '#ffffff' : h);
-  const layers = [
-    [rrect(-292, -52, 584, 124, 26), c('#ffc62b')], // body
-    [poly([[-64, -48], [-34, -172], [122, -172], [180, -48]]), c('#ffc62b')], // cab
-    [rrect(-282, -70, 214, 22, 8), c('#1c2530')], // bed rail
-    [rrect(266, 26, 48, 50, 10), c('#c9ced6')], // front bumper
-    [rrect(-312, 30, 40, 44, 10), c('#c9ced6')], // rear bumper
-  ];
+  const WY = 118; // wheel centre height
+  const layers = [];
+  if (!mono) layers.push([circle(-310, -18, 54), '#1c2026'], [circle(-310, -18, 26), '#9aa3ad']); // spare wheel
+  layers.push(
+    [seg(-36, -40, 14, -176, 18), c('#27303b')], // roll cage
+    [seg(14, -176, 150, -152, 18), c('#27303b')],
+    [seg(150, -152, 172, -40, 18), c('#27303b')],
+    [rrect(-292, -44, 584, 112, 30), c('#3f9b4b')], // body
+  );
   if (!mono) {
     layers.push(
-      [poly([[-30, -58], [-10, -150], [38, -150], [38, -58]]), '#bfe6f7'],
-      [poly([[52, -58], [52, -150], [108, -150], [152, -58]]), '#bfe6f7'],
-      [rrect(-292, 14, 584, 22, 0), '#1c2530'], // stripe
-      [rrect(256, -32, 34, 30, 8), '#fff6c9'], // headlight
-      [rrect(-292, -32, 20, 30, 6), '#e0463c'], // tail light
-      [circle(-6, -184, 13), '#fff6c9'], [circle(44, -184, 13), '#fff6c9'], [circle(94, -184, 13), '#fff6c9'],
+      [rrect(-292, 22, 584, 46, 20), '#2c7438'], // lower body
+      [rrect(-262, -32, 520, 14, 7), '#63bd6d'], // highlight
+      [circle(84, -92, 42), '#ffc62b'], // helmet
+      [rrect(92, -104, 42, 22, 8), '#27303b'], // visor
+      [rrect(58, -58, 52, 22, 6), '#27303b'], // shoulders
+      [rrect(262, -28, 26, 32, 8), '#fff08a'], // headlight
+      [rrect(-290, -28, 18, 30, 6), '#e0463c'], // tail light
+      [rrect(272, 30, 40, 30, 8), '#27303b'], // bumper
     );
   }
   for (const wx of [-176, 176]) {
     if (mono) {
       // a ring reads as a wheel in a one-colour icon
-      layers.push([circle(wx, 122, 118), '#000000', 'cut'], [circle(wx, 122, 106), '#ffffff'], [circle(wx, 122, 52), '#000000', 'cut']);
+      layers.push([circle(wx, WY, 112), '#000000', 'cut'], [circle(wx, WY, 100), '#ffffff'], [circle(wx, WY, 50), '#000000', 'cut']);
     } else {
-      layers.push([circle(wx, 122, 118), '#3b1d12'], [circle(wx, 122, 106), '#15171b'], [circle(wx, 122, 58), '#c9ced6'], [circle(wx, 122, 22), '#2b3238']);
-      for (let i = 0; i < 5; i++) {
-        const a = (i * Math.PI * 2) / 5 + 0.3;
-        layers.push([seg(wx, 122, wx + Math.cos(a) * 52, 122 + Math.sin(a) * 52, 12), '#3a3f48']);
+      layers.push([circle(wx, WY - 22, 118), '#1f5a2c'], [circle(wx, WY, 98), '#1c2026']); // wheel arch, tyre
+      for (let i = 0; i < 14; i++) {
+        const t = (i * Math.PI * 2) / 14;
+        layers.push([circle(wx + Math.cos(t) * 99, WY + Math.sin(t) * 99, 13), '#1c2026']); // tread blocks
       }
+      layers.push([circle(wx, WY, 56), '#c3cad3']);
+      for (let i = 0; i < 6; i++) {
+        const t = (i * Math.PI * 2) / 6 + 0.3;
+        layers.push([seg(wx, WY, wx + Math.cos(t) * 50, WY + Math.sin(t) * 50, 12), '#3a3f48']);
+      }
+      layers.push([circle(wx, WY, 20), '#2b3238']);
     }
   }
   return layers;
@@ -113,11 +124,11 @@ function scene(kind) {
     layers.push(
       [circle(770, 330, 250), '#ffe7a8', 0.25],
       [circle(770, 330, 160), '#ffe7a8'],
-      [poly([[0, 720], [150, 520], [300, 660], [470, 440], [640, 640], [800, 500], [1024, 700], [1024, 1024], [0, 1024]]), '#b3401c'],
-      [poly([[0, 820], [220, 640], [420, 780], [640, 620], [860, 760], [1024, 660], [1024, 1024], [0, 1024]]), '#8a2c16'],
+      [poly([[0, 560], [40, 430], [250, 430], [290, 560], [430, 560], [470, 380], [700, 380], [740, 560], [860, 560], [890, 470], [1024, 470], [1024, 1024], [0, 1024]]), '#dc9a68'],
+      [poly([[0, 700], [120, 700], [150, 600], [380, 600], [420, 740], [560, 740], [600, 640], [840, 640], [880, 760], [1024, 760], [1024, 1024], [0, 1024]]), '#b8664a'],
     );
   }
-  if (kind === 'icon') layers.push([poly([[0, 968], [1024, 788], [1024, 1024], [0, 1024]]), '#3b1d12'], [poly([[0, 952], [1024, 772], [1024, 792], [0, 972]]), '#6a3520']);
+  if (kind === 'icon') layers.push([poly([[0, 968], [1024, 788], [1024, 1024], [0, 1024]]), '#8f3f2c'], [poly([[0, 948], [1024, 768], [1024, 792], [0, 972]]), '#e59460']);
   if (fg) {
     // the adaptive-icon foreground must stay inside the middle two thirds
     const k = kind === 'icon' ? 1 : kind === 'splash' ? 0.92 : 0.6;
@@ -125,10 +136,10 @@ function scene(kind) {
     const [tx, ty] = at(512, kind === 'icon' ? 612 : 600);
     for (const [shape, color, mode] of truck(mono)) layers.push([place(shape, { x: tx, y: ty, scale: 1.14 * k, rot: kind === 'icon' ? -10 : -8 }), color, 1, mode]);
     const [bx, by] = at(512 - BADGE_W / 2, kind === 'icon' ? 96 : 60);
-    if (!mono) for (const [shape, color] of badge('#3b1d12')) layers.push([place(shape, { x: bx + 9 * k, y: by + 10 * k, scale: k }), color, 0.55]);
-    for (const [shape, color] of badge('#ffffff')) layers.push([place(shape, { x: bx, y: by, scale: k }), color]);
+    if (!mono) for (const [shape, color] of badge('#2a1206')) layers.push([place(shape, { x: bx + 9 * k, y: by + 12 * k, scale: k }), color, 0.9]);
+    for (const [shape, color] of badge(mono ? '#ffffff' : '#ffd23f')) layers.push([place(shape, { x: bx, y: by, scale: k }), color]);
   }
-  return { layers, gradient: bg ? [hex('#ffb347'), hex('#e2541f')] : null };
+  return { layers, gradient: bg ? [hex('#c2553a'), hex('#eeb07c')] : null };
 }
 
 // ---------------------------------------------------------------- rasteriser

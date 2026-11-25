@@ -1,7 +1,7 @@
 // Level select for landscape: ten environment tabs along the top, and the ten
 // levels of the chosen environment as one row of cards that scrolls sideways.
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { FEATURE_LABEL } from '../core/features';
 import { PX_PER_METER } from '../core/constants';
 import { DIFFICULTY_LABEL, LEVELS, STAGES_PER_WORLD, difficultyTier, levelObstacles, type LevelConfig } from '../data/levels';
@@ -12,6 +12,7 @@ import { useRewardedReady } from '../ads/AdMobManager';
 import { watchAdForReward } from '../ads/rewards';
 import { play } from '../audio/sound';
 import { C, Screen, Stars, s as ks } from '../ui/kit';
+import { menuBackdropUri } from '../render/menuBackdrop';
 
 const TIER_COLOR = ['#55c26a', '#f0b429', '#f2742b', '#e0463c', '#b455e0'];
 const CARD_W = 158;
@@ -94,6 +95,8 @@ const LevelCard = memo(function LevelCard({ level, index, stars, unlocked, curre
   const th = THEMES[level.theme];
   const tier = difficultyTier(level);
   const obstacles = useMemo(() => levelObstacles(level), [level]);
+  // a small picture of the world's scenery, a different stretch for each level of the world
+  const art = useMemo(() => menuBackdropUri(th.id, 300, 224, (level.id - 1) % STAGES_PER_WORLD), [th.id, level.id]);
   const a = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     a.setValue(0);
@@ -118,10 +121,16 @@ const LevelCard = memo(function LevelCard({ level, index, stars, unlocked, curre
         style={({ pressed }) => [st.card, { borderColor: current ? C.gold : adUnlock ? C.orange : 'rgba(0,0,0,0.4)', opacity: unlocked || adUnlock ? 1 : 0.72, transform: [{ scale: pressed && (unlocked || adUnlock) ? 0.96 : 1 }] }]}
       >
         <View style={[st.art, { backgroundColor: th.skyTop }]}>
-          <View style={[st.sun, { backgroundColor: th.sun }]} />
-          <View style={[st.hillFar, { backgroundColor: th.farHill }]} />
-          <View style={[st.hillNear, { backgroundColor: th.nearHill }]} />
-          <View style={[st.ground, { backgroundColor: th.grass }]} />
+          {art ? (
+            <Image source={{ uri: art }} resizeMode="cover" fadeDuration={0} style={StyleSheet.absoluteFill} />
+          ) : (
+            <>
+              <View style={[st.sun, { backgroundColor: th.sun }]} />
+              <View style={[st.hillFar, { backgroundColor: th.farHill }]} />
+              <View style={[st.hillNear, { backgroundColor: th.nearHill }]} />
+              <View style={[st.ground, { backgroundColor: th.grass }]} />
+            </>
+          )}
           <Text style={st.num}>{level.id}</Text>
           {current && unlocked ? (
             <View style={st.playTag}>
@@ -165,9 +174,9 @@ const st = StyleSheet.create({
   tabName: { color: '#ffffff', fontSize: 11.5, fontWeight: '900', marginTop: -4, textShadowColor: '#000', textShadowRadius: 4 },
   blurb: { color: '#e6edf2', fontSize: 12, marginVertical: 4, paddingHorizontal: 2, textShadowColor: '#000', textShadowRadius: 4 },
   worldName: { color: '#ffffff', fontSize: 14, fontWeight: '900' },
-  cards: { paddingBottom: 6, alignItems: 'stretch' },
-  card: { flex: 1, minHeight: 150, borderRadius: 14, borderWidth: 2.5, backgroundColor: 'rgba(18,28,36,0.94)', overflow: 'hidden' },
-  art: { height: 58, justifyContent: 'center', paddingLeft: 10, overflow: 'hidden' },
+  cards: { paddingBottom: 6, alignItems: 'flex-start' },
+  card: { minHeight: 150, borderRadius: 14, borderWidth: 2.5, backgroundColor: 'rgba(18,28,36,0.94)', overflow: 'hidden' },
+  art: { height: 112, justifyContent: 'flex-end', paddingLeft: 10, paddingBottom: 4, overflow: 'hidden' },
   sun: { position: 'absolute', right: 18, top: 8, width: 20, height: 20, borderRadius: 10, opacity: 0.9 },
   hillFar: { position: 'absolute', left: -30, bottom: -34, width: 130, height: 70, borderRadius: 65 },
   hillNear: { position: 'absolute', right: -34, bottom: -40, width: 150, height: 74, borderRadius: 75 },

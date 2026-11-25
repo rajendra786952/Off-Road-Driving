@@ -89,6 +89,14 @@ export function record(w: number, h: number, draw: (c: SkCanvas) => void, ox = 0
 
 export const DEG = 180 / Math.PI;
 
+/** Blend two #rrggbb colours: t = 0 gives a, t = 1 gives b. */
+export function mix(a: string, b: string, t: number): string {
+  const x = parseInt(a.slice(1), 16);
+  const y = parseInt(b.slice(1), 16);
+  const ch = (sh: number) => Math.round(((x >> sh) & 255) * (1 - t) + ((y >> sh) & 255) * t).toString(16).padStart(2, '0');
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
+}
+
 /** Darken (amount < 0) or lighten (amount > 0) a #rrggbb colour. */
 export function shade(hex: string, amount: number): string {
   const n = parseInt(hex.slice(1), 16);

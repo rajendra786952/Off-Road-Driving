@@ -4,17 +4,18 @@
 // car pictures, so a menu shows it with a plain <Image>.
 import { Skia, TileMode } from '@shopify/react-native-skia';
 import { fill, shade } from './gfx';
-import { BACKDROP_PERIOD, backdropPath, skylineWindows } from './decor';
+import { BACKDROP_PERIOD, backdropPicture, type BackdropLayer } from './decor';
 import { hashFloat } from '../core/rng';
 import { THEMES, type ThemeId } from '../data/themes';
 
 const cache = new Map<string, string | null>();
 
-export function menuBackdropUri(themeId: ThemeId, width: number, height: number): string | null {
+/** `variant` slides the mountains sideways, so each level card of a world shows a different stretch of scenery. */
+export function menuBackdropUri(themeId: ThemeId, width: number, height: number, variant = 0): string | null {
   // a soft background does not need full resolution
   const w = Math.max(64, Math.min(1100, Math.round(width)));
   const h = Math.max(64, Math.round((w * height) / Math.max(1, width)));
-  const key = `${themeId}|${w}x${h}`;
+  const key = `${themeId}|${w}x${h}|${variant}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
@@ -37,20 +38,20 @@ export function menuBackdropUri(themeId: ThemeId, width: number, height: number)
       c.drawCircle(w * 0.8, h * 0.24, 44 * k, fill(th.sun, 0.95));
       if (th.backdrop === 'volcano') c.drawCircle(w * 0.45, h * 0.62, 240 * k, fill('#ff5a1a', 0.2));
 
-      const layer = (which: 0 | 1, color: string, y: number, shift: number) => {
-        const path = backdropPath(th.backdrop, which);
+      const layer = (which: BackdropLayer, y: number, shift: number) => {
+        const pic = backdropPicture(th.backdrop, which, th);
         const period = BACKDROP_PERIOD * k;
         for (let x = -shift * k; x < w; x += period) {
           c.save();
           c.translate(x, y);
           c.scale(k, k);
-          c.drawPath(path, fill(color));
-          if (th.backdrop === 'skyline') c.drawPath(skylineWindows(which), fill('#ffd98a', which ? 0.75 : 0.5));
+          c.drawPicture(pic);
           c.restore();
         }
       };
-      layer(0, th.farHill, h * 0.6, 260);
-      layer(1, th.nearHill, h * 0.71, 620);
+      layer(0, h * 0.58, 260 + variant * 110);
+      layer(1, h * 0.66, 620 + variant * 190);
+      layer(2, h * 0.74, 130 + variant * 300);
 
       // the road along the bottom
       c.drawRect({ x: 0, y: h * 0.78, width: w, height: h * 0.14 }, fill(th.dirt));
@@ -68,7 +69,7 @@ export function menuBackdropUri(themeId: ThemeId, width: number, height: number)
   } catch {
     uri = null;
   }
-  if (cache.size > 24) cache.clear();
+  if (cache.size > 140) cache.clear();
   cache.set(key, uri);
   return uri;
 }

@@ -4,6 +4,7 @@
 import type { InterstitialAd as SdkInterstitial, RewardedAd as SdkRewarded } from 'react-native-google-mobile-ads';
 import { AdConfig, adUnitId } from './AdConfig';
 import { gma } from './native';
+import { showSimulatedAd, adSimulator } from './simAd';
 import { describeAdError, setAdsStatus } from './diagnostics';
 
 // Event names of the SDK (AdEventType / RewardedAdEventType). Written out here so
@@ -48,7 +49,13 @@ export class FullScreenAd {
     this.host = host;
   }
 
+  /** Development build without the AdMob native module (Expo Go): the ad is simulated on screen. */
+  private simulated(): boolean {
+    return __DEV__ && gma() === null;
+  }
+
   isReady(): boolean {
+    if (this.simulated()) return !this.showing && this.host.canLoad();
     return this.ready && !this.showing && Date.now() - this.loadedAt < MAX_AGE_MS;
   }
 
@@ -61,7 +68,10 @@ export class FullScreenAd {
     if (this.showing || this.loading || !this.host.canLoad()) return;
     if (this.ready && Date.now() - this.loadedAt < MAX_AGE_MS) return;
     const lib = gma();
-    if (!lib) return; // no AdMob native module in this build
+    if (!lib) {
+      if (this.simulated()) this.host.onChange();
+      return; // no AdMob native module in this build
+    }
     this.dispose();
     try {
       const unit = adUnitId(this.kind);
@@ -80,7 +90,19 @@ export class FullScreenAd {
   }
 
   /** Show the preloaded ad. Resolves once it is closed, never rejects. */
+  private async showSimulated(): Promise<ShowOutcome> {
+    if (!this.isReady() || (this.kind === 'rewarded' && adSimulator.rewarded === 'unavailable')) return 'unavailable';
+    this.showing = true;
+    this.host.onPresented(true);
+    const outcome = await showSimulatedAd(this.kind);
+    this.showing = false;
+    this.host.onPresented(false);
+    this.host.onChange();
+    return outcome;
+  }
+
   show(): Promise<ShowOutcome> {
+    if (this.simulated()) return this.showSimulated();
     const ad = this.ad;
     if (!ad || !this.isReady()) {
       this.load();

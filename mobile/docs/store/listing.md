@@ -58,11 +58,44 @@ The game is free and shows ads. Watching a short video is always your choice: us
 | Contact email | your support email (shown publicly on the store page) |
 | Privacy policy | the web address where you host `privacy-policy.html` |
 
-## Graphics you still need
+## Graphics (all made; upload them in Play Console)
 
-- App icon: 512 x 512 PNG. `mobile/assets/icon.png` can be resized to this.
-- Feature graphic: 1024 x 500 PNG or JPG. Not made yet.
-- Phone screenshots: at least 2, landscape, 16:9 (for example 1920 x 1080). Not made yet. Good scenes: a jump, a rope bridge, the garage, the level list.
+Grow users → Store presence → Main store listing → Graphics. Everything is a real screenshot of the game, dressed with a headline.
+Brand text on the images is "OFFROAD RACING 4X4", the listing name above. Change `BRAND` in `scripts/store-compose.mjs` if you rename the game.
+
+| Field | File(s) | Size |
+| --- | --- | --- |
+| App icon (the game's own jeep, no second name; replaces the old "Trail Torque" 3D picture) | `graphics/play/icon-512x512.png` | 512 x 512 |
+| Feature graphic | `graphics/play/feature-graphic-1024x500.jpg` | 1024 x 500 |
+| Phone screenshots (landscape: the right shape for this landscape-only game) | `graphics/play/landscape/01..08-*.jpg` | 1920 x 1080 |
+| Phone screenshots, portrait set (the same eight scenes, landscape picture in a card plus a close-up) | `graphics/play/portrait/01..08-*.jpg` | 1080 x 1920 |
+
+**Promo video:** `graphics/play/promo-1920x1080.mp4` (27 s, six scenes played by the test driver, the game's music).
+Play Console takes a YouTube link, not a file: upload the clip to YouTube (public or unlisted, ads off) and paste the
+address into *Video*. Remake it with `FFMPEG=<path to ffmpeg> node scripts/store-video.mjs` (web build on :8090).
+
+Upload the **landscape** set as the phone screenshots (8 allowed). Use the portrait set only if you want a portrait set on
+the listing too: Play shows each orientation separately. Order is the file number:
+1 CONQUER THE OFFROAD · 2 MASTER EXTREME HILLS · 3 OVERCOME EVERY OBSTACLE · 4 PERFORM AMAZING STUNTS ·
+5 EXPLORE 10 UNIQUE WORLDS · 6 DRIVE 100 VEHICLES · 7 UPGRADE YOUR RIDE · 8 100 LEVELS. ENDLESS ADVENTURE.
+Play's limits at the time of writing: JPEG or 24-bit PNG, no transparency, 320 to 3840 px per side, longest side at most
+twice the shortest, 8 MB each. Check the current rules in Play Console when you upload.
+
+To remake them after changing the game: start the web build (`npm run web -- --port 8090`, Node 22+), then
+`node scripts/store-play.mjs` (plays the game with the test driver and takes the raw pictures into `graphics/play/raw/`)
+and `node scripts/store-compose.mjs` (adds the headlines). `node scripts/store-compose.mjs brand` remakes only the
+icon and the feature graphic.
+
+### How to update the listing
+
+1. Play Console → your app → Grow users → Store presence → **Main store listing**.
+2. Replace the screenshots under *Phone screenshots* with `graphics/play/landscape/01..08` (drag them in order).
+3. Replace the feature graphic and icon if they changed. Paste the texts above if the numbers in them changed.
+4. Save, then **Send for review** (store listing changes are reviewed, usually within a day or two).
+5. To compare the new screenshots against the old: Grow users → **Store listing experiments** → create a *Main store
+   listing* experiment (graphics) and give the new set 50 % of visitors; keep it for a week or two before choosing.
+6. The new look is in the **app**, so it also needs a new release (a new build uploaded to a track). The screenshots
+   alone do not change what players see.
 
 ## Before you paste
 

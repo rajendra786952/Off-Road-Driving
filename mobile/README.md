@@ -43,6 +43,9 @@ npx tsx scripts/perf.ts                       # cost of one physics step, engine
 npx tsx scripts/gas-only.ts                   # does holding the throttle win? (it must not, on the advanced levels)
 npx tsx scripts/lab.ts 1 rally-buggy 1 1 v    # fly one stunt ramp kind (1-7) with a chosen car, step by step
 npx tsx scripts/steep-lab.ts mountain-jeep 330 # a steep descent: smart driver vs throttle only
+node scripts/shots.mjs out 1280x720 55:1000 75:feat=ramp   # pictures straight from the renderer (web build on :8090, Node 22+)
+node scripts/store-play.mjs && node scripts/store-compose.mjs  # Play Store screenshots, see docs/store/listing.md
+node scripts/perf-fx.mjs 45                   # renderer cost with each scenery layer switched off
 npx expo-doctor
 ```
 
@@ -77,6 +80,7 @@ or measure in the APK (Settings -> Show frame rate).
 | Tracks | Roller-coaster terrain: long climbs and sharp plunges layered on rolling hills, with calmer stretches in between (`COASTER_AMP` in `core/terrain.ts`). Obstacle zones are set at the average height of the hills around them so the joins are never a wall. |
 | Obstacles | Fixed rocks, logs, crates, barrels, boulders, ramps, broken road (gaps), seesaws, plank bridges, wrecking balls, moving platforms, mud pits, water, steep hills, cliff drops, falling rocks, rolling boulders. Hazards have a warning sign a little before them. Each is introduced at a set level, then mixed in. |
 | Stunts | Seven kinds of stunt ramp (see below), real air control, front and back flips counted from the body's actual rotation, landing grades, combo multiplier, damage. From level 6 every level has a jump. |
+| Visual upgrade | Each world has its own look, all drawn in code: three parallax mountain/tree layers with haze (snow caps, pine and jungle forests with waterfalls, mesa strata, volcano with lava and smoke, neon skyline), a shaded earth with strata, pebbles and a surface made for the world (grass tufts, sand ripples, snow drifts, road dashes, glowing cracks), shaded trees, rocks and cacti, soft clouds, foreground grass, a car shadow, wheel dust and landing bursts, headlight beams in the night worlds. Level cards show their world's scenery. Cost and how to measure it: [docs/PERFORMANCE.md](docs/PERFORMANCE.md). |
 | Brake sections | Steep descents (from level 2), jump-then-descent sequences, collapsing bridges (from level 31) and mud that bogs down a spinning wheel: holding the throttle does not finish the advanced levels. |
 | Run rules | Fuel and fuel cans, coins, stars from the share of coins collected, stunt points (paid in coins), a bonus per kilometre, checkpoints (continue up to three times per run, they also repair the car), finish line. |
 | Screens | Home, level select, garage, settings, driving screen with pause / restart / resume and a results panel. |

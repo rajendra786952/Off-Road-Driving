@@ -1,16 +1,16 @@
 // Draws one frame of a run into a Skia canvas. Static things (terrain chunks
 // with their decoration, the car body, backdrops, liquids) are recorded once
 // into pictures or paths and reused; a frame is a few dozen draw calls.
-import { Skia, TileMode, type SkCanvas, type SkPaint, type SkPath, type SkPicture } from '@shopify/react-native-skia';
-import { DEG, fill, hardFill, poly, record, rect, rrect, shade, stroke, tmpRect } from './gfx';
+import { FilterMode, MipmapMode, Skia, TileMode, type SkCanvas, type SkImage, type SkPaint, type SkPath, type SkPicture } from '@shopify/react-native-skia';
+import { DEG, fill, hardFill, mix, poly, record, rect, rrect, shade, stroke, tmpRect } from './gfx';
 import { drawPictureAt, getCarArt, type CarArt } from './car';
-import { BACKDROP_PERIOD, backdropPath, drawDecor, skylineWindows } from './decor';
+import { BACKDROP_PERIOD, backdropImage, backdropPicture, cloudPicture, drawDecor, foregroundPicture, type BackdropLayer } from './decor';
 import { CHUNK_SIZE, PX_PER_METER, SPAWN_X } from '../core/constants';
 import { SEGMENT } from '../core/terrain';
 import { hashFloat } from '../core/rng';
 import type { Feature } from '../core/features';
 import { PENDULUM_TOP, type Chunk, type GameEvent, type GameWorld, type Prop } from '../core/world';
-import type { DecorType, Theme } from '../data/themes';
+import type { DecorType, Theme, ThemeId } from '../data/themes';
 
 /** One slot of the particle pool. The slots are created once and reused for the whole run. */
 interface Particle {
@@ -26,6 +26,11 @@ interface Particle {
 }
 
 const SMALL_DECOR: DecorType[] = ['bush', 'rock', 'reed', 'cone'];
+/** What the surface of the ground is made of in each world. */
+const SURFACE: Record<ThemeId, 'tufts' | 'sand' | 'snow' | 'asphalt' | 'ash'> = {
+  countryside: 'tufts', forest: 'tufts', desert: 'sand', mountains: 'tufts', snow: 'snow',
+  jungle: 'tufts', swamp: 'tufts', city: 'asphalt', canyon: 'sand', volcano: 'ash',
+};
 const MAX_PARTICLES = 90;
 /** Hazards that get a warning sign a little before them. */
 const WARNED = new Set<Feature['type']>(['gap', 'ramp', 'falling', 'pendulum', 'seesaw', 'drop']);
@@ -37,9 +42,17 @@ export class SceneRenderer {
   private chunkPics = new Map<number, SkPicture>();
   private chunkVersion = -1;
   private liquidPaths = new Map<number, SkPath>();
-  private far: SkPath;
-  private near: SkPath;
-  private windows: SkPath[] = [];
+  /** Three parallax layers of far scenery, each recorded once. */
+  private layers: { image: SkImage | null; top: number; pic: SkPicture | null }[];
+  private cloudPic: SkPicture;
+  private fgPic: SkPicture;
+  private beam: SkPicture | null = null;
+  private dustClock = 0;
+  /**
+   * Lighter scenery for a phone that cannot hold 60 frames a second (set by the frame pacer): the middle mountain
+   * layer and the foreground grass are skipped. They are the largest areas drawn on top of each other.
+   */
+  lite = false;
   private skyPic: SkPicture | null = null;
   private skyW = 0;
   private skyH = 0;
@@ -56,7 +69,7 @@ export class SceneRenderer {
   private readonly ropePaint = stroke('#16181c', 4);
   private readonly shadowNear = fill('#000000', 0.2);
   private readonly shadowFar = fill('#000000', 0.1);
-  private readonly liquidPaints = new Map<number, { fill: SkPaint; edge: SkPaint; level: number }>();
+  private readonly liquidPaints = new Map<number, { fill: SkPaint; edge: SkPaint; level: number; marks: SkPath; markPaint: SkPaint; gloss: SkPaint }>();
   private clouds: { x: number; y: number; s: number; drift: number }[] = [];
   private shake = 0;
   private camX = 0;
@@ -68,9 +81,12 @@ export class SceneRenderer {
     this.world = world;
     this.th = world.theme;
     this.art = getCarArt(world.spec);
-    this.far = backdropPath(this.th.backdrop, 0);
-    this.near = backdropPath(this.th.backdrop, 1);
-    if (this.th.backdrop === 'skyline') this.windows = [skylineWindows(0), skylineWindows(1)];
+    this.layers = ([0, 1, 2] as BackdropLayer[]).map((l) => {
+      const baked = backdropImage(this.th.backdrop, l, this.th);
+      return baked ? { image: baked.image, top: baked.top, pic: null } : { image: null, top: 0, pic: backdropPicture(this.th.backdrop, l, this.th) };
+    });
+    this.cloudPic = cloudPicture(this.th);
+    this.fgPic = foregroundPicture(this.th);
     const blank = fill('#ffffff');
     for (let i = 0; i < MAX_PARTICLES; i++) this.particles.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 0, grav: 0, paint: blank });
     for (let i = 0; i < 6; i++) {
@@ -103,6 +119,12 @@ export class SceneRenderer {
         break;
       case 'land':
         this.shake = Math.max(this.shake, e.intensity * 7);
+        if (e.intensity > 0.25) {
+          // a burst of dirt kicked up under each wheel
+          const v = this.world.vehicle;
+          const col = this.surfaceColor(v.x);
+          for (const w of v.wheels) this.emit(w.position.x, w.position.y + v.spec.wheel.r - 2, 4 + Math.round(e.intensity * 9), { color: col, speed: 1.9 + e.intensity * 1.6, life: 560, size: 6.5, grav: -0.01, up: true });
+        }
         break;
       case 'stunt':
         if (e.points) {
@@ -183,6 +205,16 @@ export class SceneRenderer {
       c.x -= (c.drift * dtMs) / 1000;
       if (c.x < -300) c.x = 1700;
     }
+    // a little dust behind each wheel that is on the ground and moving
+    this.dustClock -= dtMs;
+    if (this.dustClock <= 0 && Math.abs(vx) > 3 && this.world.state === 'playing') {
+      this.dustClock = 90;
+      const col = this.surfaceColor(v.x);
+      for (const w of v.wheels) {
+        const foot = w.position.y + v.spec.wheel.r;
+        if (Math.abs(foot - this.world.surfaceY(w.position.x)) < 9) this.emit(w.position.x - Math.sign(vx) * 6, foot - 3, 1, { color: col, speed: 0.9, life: 420, size: 4.5, grav: -0.02, back: vx > 0 });
+      }
+    }
     this.shake *= Math.pow(0.004, dtMs / 1000);
   }
 
@@ -236,16 +268,78 @@ export class SceneRenderer {
         pts.push(x0 + CHUNK_SIZE + 1, ys[ys.length - 1] + offset, x0 + CHUNK_SIZE + 1, bottom, x0, bottom);
         return poly(pts);
       };
+      // earth in bands: lighter near the top, darker with depth
       c.drawPath(body(0), hardFill(th.dirt));
+      c.drawPath(body(46), hardFill(shade(th.dirt, -0.09)));
       c.drawPath(body(90), hardFill(th.dirtDeep));
+      c.drawPath(body(230), hardFill(shade(th.dirtDeep, -0.22)));
+      const yAt = (x: number) => {
+        const f = Math.max(0, Math.min(ys.length - 1.001, (x - x0) / SEGMENT));
+        const i = Math.floor(f);
+        return ys[i] + (ys[i + 1] - ys[i]) * (f - i);
+      };
+      const style = SURFACE[th.id];
+      const seed2 = seed + chunk.index * 131;
+      // stones and pebbles buried in the earth (two paths = two draw calls for all of them)
+      const lightStones = Skia.PathBuilder.Make();
+      const darkStones = Skia.PathBuilder.Make();
+      for (let j = 0; j < 34; j++) {
+        const x = x0 + hashFloat(seed2, j) * CHUNK_SIZE;
+        const y = yAt(x) + 26 + hashFloat(seed2 + 1, j) * 190;
+        const r = 2 + hashFloat(seed2 + 2, j) * 5;
+        (j % 3 ? darkStones : lightStones).addCircle(x, y, r);
+      }
+      c.drawPath(lightStones.detach(), fill(shade(th.dirt, 0.22), 0.55));
+      c.drawPath(darkStones.detach(), fill(shade(th.dirtDeep, -0.3), 0.5));
       // grass / road surface: skipped on the walls of a hole
       const grass = fill(th.grass);
+      const lip = fill('#000000', 0.2);
       const edge = stroke(th.grassLight, 5);
       for (let i = 0; i < ys.length - 1; i++) {
         if (Math.abs(ys[i + 1] - ys[i]) > 110) continue;
         const ax = x0 + i * SEGMENT;
+        c.drawPath(poly([ax, ys[i] + 15, ax + SEGMENT + 0.6, ys[i + 1] + 15, ax + SEGMENT + 0.6, ys[i + 1] + 23, ax, ys[i] + 23]), lip); // shadow under the grass
         c.drawPath(poly([ax, ys[i], ax + SEGMENT + 0.6, ys[i + 1], ax + SEGMENT + 0.6, ys[i + 1] + 16, ax, ys[i] + 16]), grass);
         c.drawLine(ax, ys[i], ax + SEGMENT, ys[i + 1], edge);
+      }
+      // surface texture that gives each world its own ground
+      const tex = Skia.PathBuilder.Make();
+      const tex2 = Skia.PathBuilder.Make();
+      for (let x = x0 + 4; x < x0 + CHUNK_SIZE - 4; x += style === 'asphalt' ? 46 : style === 'tufts' ? 9 : 17) {
+        const y = yAt(x);
+        if (Math.abs(yAt(x + 6) - yAt(x - 6)) > 70) continue;
+        const k = hashFloat(seed2 + 5, x);
+        if (style === 'tufts') {
+          const h = 5 + k * 9;
+          (k > 0.5 ? tex : tex2).addPath(poly([x, y + 1, x + (k - 0.5) * 8, y - h, x + 5, y + 1]));
+        } else if (style === 'asphalt') {
+          tex.addPath(poly([x, y + 6, x + 24, yAt(x + 24) + 6, x + 24, yAt(x + 24) + 9.5, x, y + 9.5])); // centre-line dash
+        } else if (style === 'sand') {
+          tex.addPath(poly([x, y + 8 + k * 6, x + 12, yAt(x + 12) + 7 + k * 6, x + 12, yAt(x + 12) + 8.6 + k * 6, x, y + 9.6 + k * 6])); // wind ripple
+          if (k > 0.8) tex2.addCircle(x, y - 1, 1.6);
+        } else if (style === 'snow') {
+          if (k > 0.5) tex.addCircle(x, y - 1, 2 + k * 3); // drift bumps
+          else tex2.addCircle(x, y + 8 + k * 30, 1.4); // sparkle in the snow
+        } else {
+          if (k > 0.82) tex.addPath(poly([x, y + 10, x + 5, y + 20 + k * 40, x + 9, y + 12, x + 7, y + 30 + k * 30, x + 2, y + 18])); // glowing crack
+          else if (k > 0.5) tex2.addCircle(x, y + 3 + k * 6, 1.8);
+        }
+      }
+      if (style === 'tufts') {
+        c.drawPath(tex.detach(), fill(th.grassLight));
+        c.drawPath(tex2.detach(), fill(shade(th.grass, -0.15)));
+      } else if (style === 'asphalt') {
+        c.drawPath(tex.detach(), fill(th.grassLight, 0.8));
+        tex2.detach();
+      } else if (style === 'sand') {
+        c.drawPath(tex.detach(), fill(shade(th.dirtDeep, -0.1), 0.35));
+        c.drawPath(tex2.detach(), fill(th.grassLight));
+      } else if (style === 'snow') {
+        c.drawPath(tex.detach(), fill('#ffffff'));
+        c.drawPath(tex2.detach(), fill('#ffffff', 0.85));
+      } else {
+        c.drawPath(tex.detach(), fill(th.grassLight, 0.9));
+        c.drawPath(tex2.detach(), fill(shade(th.rock, 0.2), 0.7));
       }
       for (const d of decor) if (SMALL_DECOR.includes(d.type)) place(d);
     }, x0 - 200, minY - 400);
@@ -316,14 +410,33 @@ export class SceneRenderer {
       if ((f.type !== 'mud' && f.type !== 'water') || f.b < left || f.a > right) continue;
       let lp = this.liquidPaints.get(f.id);
       if (!lp) {
-        const col = f.type === 'mud' ? th.mud : th.water;
-        lp = { fill: fill(col, f.type === 'mud' ? 0.9 : 0.62), edge: stroke(shade(col, 0.35), 3, 0.8), level: w.surfaceY(f.a - 10) + 6 };
+        const mud = f.type === 'mud';
+        const col = mud ? mix(th.mud, '#8a6a44', 0.28) : th.water;
+        const level = w.surfaceY(f.a - 10) + 6;
+        // bubbles in mud, ripples and a glint on water: one path each, built once
+        const marks = Skia.PathBuilder.Make();
+        for (let x = f.a + 10; x < f.b - 10; x += mud ? 26 : 34) {
+          const k = hashFloat(f.id * 7 + 3, x);
+          if (mud) marks.addCircle(x, level + 10 + k * 26, 2 + k * 3.5);
+          else marks.addPath(poly([x, level + 8 + k * 30, x + 16, level + 8 + k * 30, x + 16, level + 10 + k * 30, x, level + 10 + k * 30]));
+        }
+        lp = {
+          fill: fill(col, mud ? 0.94 : 0.66),
+          edge: stroke(shade(col, mud ? 0.5 : 0.45), 3.5, 0.9),
+          level,
+          marks: marks.detach(),
+          markPaint: fill(mud ? shade(col, 0.4) : '#ffffff', mud ? 0.55 : 0.4),
+          gloss: stroke('#ffffff', 2, mud ? 0.28 : 0.45),
+        };
         this.liquidPaints.set(f.id, lp);
       }
       c.drawPath(this.liquidPath(f), lp.fill);
+      c.drawPath(lp.marks, lp.markPaint);
       c.drawLine(f.a - 4, lp.level, f.b + 4, lp.level, lp.edge);
+      c.drawLine(f.a + 6, lp.level + 4, f.b - 6, lp.level + 4, lp.gloss);
     }
     c.restore();
+    if (!this.lite) this.drawForeground(c, W, H, base);
   }
 
   private drawSky(c: SkCanvas, W: number, H: number, base: number): void {
@@ -344,46 +457,64 @@ export class SceneRenderer {
         const sunY = 105 * base;
         k.drawCircle(sunX, sunY, 74 * base, fill(th.sun, 0.14));
         k.drawCircle(sunX, sunY, 42 * base, fill(th.sun, 0.95));
-        if (th.backdrop === 'volcano') k.drawCircle(W * 0.5, H * 0.6, 260 * base, fill('#ff5a1a', 0.18));
+        if (th.backdrop === 'volcano') k.drawCircle(W * 0.5, H * 0.6, 260 * base, fill('#ff5a1a', 0.07));
       });
     }
     c.drawPicture(this.skyPic);
 
     if (!th.night) {
-      const cloud = this.cloudPaint;
+      // clouds drift on their own and also slide with the camera, slowly (they are far away)
       for (const cl of this.clouds) {
-        const x = ((cl.x * base) % (W + 500)) - 150;
-        const y = cl.y * base;
-        const r = 26 * cl.s * base;
-        c.drawCircle(x, y, r, cloud);
-        c.drawCircle(x + r * 1.1, y - r * 0.35, r * 1.2, cloud);
-        c.drawCircle(x + r * 2.3, y, r * 0.95, cloud);
-        c.drawCircle(x + r * 0.6, y + r * 0.3, r * 0.9, cloud);
-        c.drawCircle(x + r * 1.7, y + r * 0.3, r * 0.9, cloud);
+        const x = ((cl.x * base - this.camX * 0.02 * base) % (W + 500) + (W + 500)) % (W + 500) - 150;
+        c.save();
+        c.translate(x, cl.y * base);
+        c.scale(cl.s * base, cl.s * base);
+        c.drawPicture(this.cloudPic);
+        c.restore();
       }
     }
 
+    // three layers of scenery that move at different speeds: far mountains, mid ranges, near trees and hills
     const dy = this.camY - 80;
-    this.drawLayer(c, this.far, th.farHill, 0, 0.08, H * 0.6 - Math.max(-70, Math.min(40, dy * 0.06)) * base, W, base);
-    this.drawLayer(c, this.near, th.nearHill, 1, 0.2, H * 0.7 - Math.max(-110, Math.min(60, dy * 0.12)) * base, W, base);
+    this.drawLayer(c, 0, 0.05, H * 0.56 - Math.max(-60, Math.min(36, dy * 0.05)) * base, W, base);
+    if (!this.lite) this.drawLayer(c, 1, 0.12, H * 0.64 - Math.max(-90, Math.min(48, dy * 0.09)) * base, W, base);
+    this.drawLayer(c, 2, 0.24, H * 0.72 - Math.max(-120, Math.min(64, dy * 0.14)) * base, W, base);
   }
 
-  private drawLayer(c: SkCanvas, path: SkPath, color: string, layer: number, par: number, y: number, W: number, base: number): void {
+  private drawLayer(c: SkCanvas, layer: number, par: number, y: number, W: number, base: number): void {
     const period = BACKDROP_PERIOD * base;
     let x = -(((this.camX * par * base) % period) + period) % period;
-    const paint = fill(color);
+    const lay = this.layers[layer];
     for (; x < W; x += period) {
       c.save();
       c.translate(x, y);
       c.scale(base, base);
-      c.drawPath(path, paint);
-      if (this.windows.length) c.drawPath(this.windows[layer], fill('#ffd98a', layer ? 0.75 : 0.5));
+      if (lay.image) c.drawImageOptions(lay.image, 0, -lay.top, FilterMode.Linear, MipmapMode.None, null);
+      else if (lay.pic) c.drawPicture(lay.pic);
       c.restore();
     }
   }
 
+  /** Dark grass or rocks along the bottom of the screen, scrolling faster than the ground: depth. */
+  private drawForeground(c: SkCanvas, W: number, H: number, base: number): void {
+    const period = 900 * base;
+    let x = -(((this.camX * 1.35 * base) % period) + period) % period;
+    for (; x < W; x += period) {
+      c.save();
+      c.translate(x, H - 74 * base);
+      c.scale(base, base);
+      c.drawPicture(this.fgPic);
+      c.restore();
+    }
+  }
+
+  private surfaceColor(_x: number): string {
+    return this.th.id === 'snow' ? '#eef4fa' : shade(this.th.dirt, 0.25);
+  }
+
   private drawVehicle(c: SkCanvas): void {
-    const v = this.world.vehicle;
+    const w = this.world;
+    const v = w.vehicle;
     const ch = v.chassis;
     const strut = this.strutPaint;
     for (let i = 0; i < v.constraints.length; i++) {
@@ -392,6 +523,35 @@ export class SceneRenderer {
       // the chassis-relative offset in world orientation.
       const p = v.constraints[i].pointA;
       c.drawLine(ch.position.x + p.x, ch.position.y + p.y, wheel.position.x, wheel.position.y, strut);
+    }
+    // soft shadow on the ground under the car; it fades and shrinks as the car leaves the ground
+    const gy = w.surfaceY(ch.position.x);
+    const lift = Math.max(0, gy - (ch.position.y + v.spec.body.h / 2 + v.spec.wheel.r));
+    if (lift < 220) {
+      const k = 1 - lift / 220;
+      const tilt = Math.atan2(w.surfaceY(ch.position.x + 40) - w.surfaceY(ch.position.x - 40), 80);
+      c.save();
+      c.translate(ch.position.x, gy + 4);
+      c.rotate(tilt * DEG, 0, 0);
+      const sw = v.spec.body.w * (1.15 + v.spec.wheel.r / 90) * (0.7 + 0.3 * k);
+      c.drawOval(tmpRect(-sw / 2, -5, sw, 11), fill('#000000', Math.round(k * 5) / 5 * 0.3));
+      c.restore();
+    }
+    // headlights in the dark worlds
+    if (this.th.night) {
+      if (!this.beam) {
+        this.beam = record(420, 200, (k) => {
+          const p = Skia.Paint();
+          p.setShader(Skia.Shader.MakeLinearGradient({ x: 0, y: 0 }, { x: 400, y: 0 }, [Skia.Color('#fff2b0cc'), Skia.Color('#fff2b000')], null, TileMode.Clamp));
+          k.drawPath(poly([0, 0, 400, -70, 400, 80]), p);
+          k.drawCircle(0, 0, 16, fill('#fff2b0', 0.4));
+        }, -10, -100);
+      }
+      const hw = v.spec.body.w / 2 - 4;
+      const ly = -v.spec.body.h * 0.25 + 3;
+      const cs = Math.cos(ch.angle);
+      const sn = Math.sin(ch.angle);
+      drawPictureAt(c, this.beam, ch.position.x + cs * hw - sn * ly, ch.position.y + sn * hw + cs * ly, ch.angle);
     }
     drawPictureAt(c, this.art.body, ch.position.x, ch.position.y, ch.angle);
     for (const wheel of v.wheels) drawPictureAt(c, this.art.wheel, wheel.position.x, wheel.position.y, wheel.angle);

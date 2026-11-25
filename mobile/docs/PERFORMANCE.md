@@ -123,3 +123,49 @@ What the numbers mean:
   the limit, and the next step is the iteration counts in finding 7.
 - `physics` and `draw` both small but the frame rate still low: the time is going to the GPU or
   to Android's compositing, not to this code.
+
+## Scenery upgrade (2026-11-23): what it costs
+
+The backgrounds, ground and effects were redrawn (see "Visual upgrade" in `README.md`). All of it is still
+drawn in code; there are no image files. How it is kept cheap:
+
+- **Three scenery layers** (far, middle, near) are each drawn **once** into a texture when a level opens
+  (`backdropImage` in `src/render/decor.ts`) and then drawn as one textured rectangle per tile. The textures are
+  1408 px wide, cropped to the height of their own mountains and trees, about 2 to 4 MB each. A frame draws
+  3 to 6 of them, where replaying the shapes would repeat several hundred draws every frame.
+- **Terrain pictures** are still recorded once per chunk. The new pebbles, grass tufts, road dashes or snow bumps
+  are each a single path, so a chunk grew by about 8 draw calls, not hundreds.
+- **Clouds** are one cached picture, drawn 6 times. The **car shadow** is one oval; the **headlight** is one cached
+  picture, in the two night worlds only.
+- **Dust** uses the existing fixed pool of 90 particles. One particle per wheel every 90 ms while driving, a burst
+  on a hard landing. Nothing is allocated while driving.
+- **Lite mode** (`SceneRenderer.lite`): when the frame pacer steps down to 30 fps (or Settings says 30), the middle
+  scenery layer and the foreground grass are skipped. They are the largest areas drawn on top of each other.
+- The vignette (dark corners) was tried and **removed**: it was the most expensive single item for the least gain.
+
+### What was measured, and what was not
+
+`scripts/perf-fx.mjs` times the renderer in headless Chrome (software GL, 1280 x 720), switching parts off one at
+a time. Software GL is fill-rate bound the way a weak GPU is, but it is **not a phone**: read the numbers as
+ratios. Median ms per frame, drawing only:
+
+| Level | Before | After | After, lite mode |
+| --- | --- | --- | --- |
+| 25 desert | 55 | about 300 | about 225 |
+| 45 snow | 61 | about 300 | about 225 |
+| 95 volcano | 77 | about 330 | |
+
+Without the three scenery layers the new frame costs 12 to 14 ms, the same order as before, so **the layers are
+the cost**: textured full-width areas, three deep, instead of two flat shapes. A software renderer is far
+slower at that than a phone GPU (not measured here), so this is a warning to check on a device, not a failure.
+
+**Not measured: any real Android device, and no Android APK was built here** (the C: drive had 2.9 GB free, too
+little for a Gradle build). `expo export --platform android` (Hermes bundle) did succeed (3.9 MB).
+**Before releasing, install a preview build on the slowest phone you have, turn on Settings → Show frame rate and
+drive level 95 and level 55.** If `target` drops to 30 on a phone that held 60 before, the fix, cheapest first, is:
+1. make `lite` the default for phones below a RAM or CPU threshold (`GameScreen.tsx`, where `renderer.lite` is set);
+2. in `backdropImage` cut the layer depths `BACKDROP_DEPTH` (they are generous) and the texture width;
+3. drop the near layer (`this.drawLayer(c, 2, ...)` in `scene.ts`).
+
+`npm run typecheck` is clean and `npm test` (48) passes; `npx tsx scripts/bot.ts` finished all 100 levels, and
+`scripts/gas-only.ts` shows throttle-only wins 4 of 14 sampled levels, all of them early ones.

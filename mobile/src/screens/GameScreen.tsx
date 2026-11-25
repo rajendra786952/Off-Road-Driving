@@ -292,6 +292,25 @@ export default function GameScreen({ levelId }: { levelId: number }) {
             world.step(c.gas, c.brake, c.front, c.back);
           }
         },
+        /** milliseconds per drawn frame (draw + flush, no image encoding) while the test driver plays on */
+        bench(frames = 120, w = 1280, h = 720): { median: number; p95: number } | undefined {
+          const surface = Skia.Surface.Make(w, h);
+          if (!surface) return undefined;
+          const times: number[] = [];
+          for (let i = 0; i < frames; i++) {
+            for (let k = 0; k < 3 && world.state === 'playing'; k++) {
+              const c = botControls(world, devBot);
+              world.step(c.gas, c.brake, c.front, c.back);
+            }
+            const t0 = performance.now();
+            renderer.update(16.7, w, h);
+            renderer.draw(surface.getCanvas(), w, h, i * 16.7);
+            surface.flush();
+            times.push(performance.now() - t0);
+          }
+          times.sort((a, b) => a - b);
+          return { median: times[Math.floor(frames / 2)], p95: times[Math.floor(frames * 0.95)] };
+        },
         snapshot(w = 960, h = 540, t = 0): string | undefined {
           renderer.update(16.7, w, h);
           const surface = Skia.Surface.Make(w, h);
@@ -320,6 +339,7 @@ export default function GameScreen({ levelId }: { levelId: number }) {
     const pacer = new FramePacer(getState().save.settings.frameRate);
     pacerRef.current = pacer;
     perfRef.current.target = pacer.target;
+    renderer.lite = pacer.target === 30;
     // Every frame makes a new picture. The last few are released by hand: they hold native
     // memory the JavaScript garbage collector cannot see, so it would let them pile up.
     const old: SkPicture[] = [];
@@ -362,7 +382,10 @@ export default function GameScreen({ levelId }: { levelId: number }) {
 
       if (world.state === 'playing') {
         updateEngine(Math.min(1, Math.abs(world.speed) / 14), gas && world.fuel > 0 ? 1 : 0);
-        if (pacer.observe(elapsed)) perfRef.current.target = 30;
+        if (pacer.observe(elapsed)) {
+          perfRef.current.target = 30;
+          renderer.lite = true; // a weak phone: draw less scenery
+        }
       }
 
       renderer.update(dt, w, h);
